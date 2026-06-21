@@ -1,0 +1,12 @@
+build/bin/
+node_modules/
+ref/
+dist/release/
+__pycache__/
+*.pyc
+*.egg-info/
+frontend/package.json.md5
+
+frontend/dist/*
+!frontend/dist/
+!frontend/dist/gitkeep

@@ -1,0 +1,22 @@
+{
+  "name": "@lyricsync/client",
+  "version": "0.1.0",
+  "description": "HTTP and WebSocket client for LyricSync",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js"
+  },
+  "files": [
+    "index.js",
+    "README.md",
+    "examples"
+  ],
+  "keywords": [
+    "lyricsync",
+    "amll",
+    "lyrics",
+    "websocket"
+  ],
+  "license": "UNLICENSED"
+}
