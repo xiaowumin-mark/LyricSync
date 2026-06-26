@@ -54,7 +54,6 @@ func (r *Runtime) Stop() {
 func (r *Runtime) ConnectAMLL(url string) error {
 	cfg := r.store.Config()
 	cfg.AMLL.URL = url
-	cfg.AMLL.AutoConnect = true
 	if err := r.connector.Connect(r.context(), cfg.AMLL.URL, cfg.AMLL.SendAudio); err != nil {
 		return err
 	}
@@ -67,12 +66,6 @@ func (r *Runtime) ConnectAMLL(url string) error {
 }
 
 func (r *Runtime) DisconnectAMLL() error {
-	cfg := r.store.Config()
-	cfg.AMLL.AutoConnect = false
-	if err := config.Save(cfg); err != nil {
-		return err
-	}
-	r.store.SetConfig(cfg)
 	r.connector.Disconnect()
 	return nil
 }
@@ -84,10 +77,9 @@ func (r *Runtime) SendSnapshot() error {
 func (r *Runtime) ToggleSendAudio(enabled bool) error {
 	cfg := r.store.Config()
 	cfg.AMLL.SendAudio = enabled
-	if err := config.Save(cfg); err != nil {
+	if err := r.SaveConfig(cfg); err != nil {
 		return err
 	}
-	r.store.SetConfig(cfg)
 	r.store.AddLog("Send audio set to " + boolText(enabled))
 	current := r.store.AMLL()
 	if current.Status == "connected" || current.Status == "connecting" {
@@ -103,15 +95,26 @@ func (r *Runtime) SelectMediaSession(sessionID string) error {
 	cfg := r.store.Config()
 	cfg.Media.SelectedSessionID = sessionID
 	cfg.Media.AutoSelect = sessionID == ""
-	if err := config.Save(cfg); err != nil {
+	if err := r.SaveConfig(cfg); err != nil {
 		return err
 	}
-	r.store.SetConfig(cfg)
 	if sessionID == "" {
 		r.store.AddLog("SMTC selection set to auto")
 	} else {
 		r.store.AddLog("SMTC selection locked to " + sessionID)
 	}
+	return nil
+}
+
+func (r *Runtime) ControlMedia(command string, positionMs int64) error {
+	return r.media.Control(command, positionMs)
+}
+
+func (r *Runtime) SaveConfig(cfg model.Config) error {
+	if err := config.Save(cfg); err != nil {
+		return err
+	}
+	r.store.SetConfig(cfg)
 	return nil
 }
 

@@ -145,7 +145,7 @@ func sessionChoiceCard(
 	bg := colors.muted
 	border := flux.Border{Width: 1, Color: colors.border}
 	if selectedValue == value {
-		bg = flux.NRGBA(230, 246, 243, 255)
+		bg = colors.primaryContainer
 		border = flux.Border{Width: 1, Color: colors.primary}
 	}
 	statusColor := colors.subtle

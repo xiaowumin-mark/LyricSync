@@ -2,11 +2,15 @@ package model
 
 import "time"
 
-const Version = "0.1.0-basic"
+const Version = "0.2.0-full"
 
 type Config struct {
-	AMLL  AMLLConfig  `json:"amll"`
-	Media MediaConfig `json:"media"`
+	AMLL   AMLLConfig   `json:"amll"`
+	Media  MediaConfig  `json:"media"`
+	Lyrics LyricsConfig `json:"lyrics"`
+	AI     AIConfig     `json:"ai"`
+	App    AppConfig    `json:"app"`
+	TTMLDB TTMLDBConfig `json:"ttmlDb"`
 }
 
 type AMLLConfig struct {
@@ -21,6 +25,45 @@ type MediaConfig struct {
 	Preferred         []string `json:"preferred"`
 	Blacklist         []string `json:"blacklist"`
 	Whitelist         []string `json:"whitelist"`
+}
+
+const (
+	LyricSourceTTMLDB  = "ttml-db"
+	LyricSourceQQ      = "qq"
+	LyricSourceKugou   = "kugou"
+	LyricSourceNetease = "netease"
+
+	CloseBehaviorExit = "exit"
+	CloseBehaviorTray = "tray"
+
+	LyricsCleanNone     = "none"
+	LyricsCleanSoftware = "software"
+	LyricsCleanAI       = "ai"
+)
+
+type LyricsConfig struct {
+	SearchPriority  []string `json:"searchPriority"`
+	CleanStrategy   string   `json:"cleanStrategy"`
+	AITranslate     bool     `json:"aiTranslate"`
+	AITransliterate bool     `json:"aiTransliterate"`
+}
+
+type AIConfig struct {
+	BaseURL      string `json:"baseUrl"`
+	APIKey       string `json:"apiKey,omitempty"`
+	Model        string `json:"model"`
+	DeepThinking bool   `json:"deepThinking"`
+}
+
+type AppConfig struct {
+	CloseBehavior string `json:"closeBehavior"`
+}
+
+type TTMLDBConfig struct {
+	AutoUpdateIndex     bool   `json:"autoUpdateIndex"`
+	UpdateIntervalHours int    `json:"updateIntervalHours"`
+	IndexURL            string `json:"indexUrl"`
+	LastUpdatedAt       string `json:"lastUpdatedAt,omitempty"`
 }
 
 type Track struct {

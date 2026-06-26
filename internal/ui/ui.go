@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	_ "github.com/xiaowumin-mark/FluxUI/icons/md3"
 	flux "github.com/xiaowumin-mark/FluxUI/ui"
 
 	"github.com/xiaowumin-mark/LyricSync/internal/app"
@@ -23,6 +24,7 @@ func Run(ctx context.Context, store *storepkg.Store, runtime *app.Runtime) error
 		},
 		flux.Title("LyricSync"),
 		flux.Size(1180, 760),
+		flux.WithTheme(appTheme()),
 	)
 }
 
@@ -48,30 +50,36 @@ type pageInfo struct {
 }
 
 var appPages = []pageInfo{
-	{key: pageDashboard, label: "仪表盘", title: "仪表盘", subtitle: "当前监听会话的播放状态", icon: "D"},
-	{key: pageSessions, label: "会话", title: "会话", subtitle: "SMTC 会话管理", icon: "S"},
-	{key: pageSongs, label: "歌曲", title: "歌曲", subtitle: "播放记录与歌词管理", icon: "M"},
-	{key: pageLogs, label: "日志", title: "日志", subtitle: "软件运行记录", icon: "L"},
-	{key: pageSettings, label: "设置", title: "设置", subtitle: "连接、媒体和歌词偏好", icon: "G"},
+	{key: pageDashboard, label: "仪表盘", title: "仪表盘", subtitle: "当前监听会话的播放状态", icon: "dashboard"},
+	{key: pageSessions, label: "会话", title: "会话", subtitle: "SMTC 会话管理", icon: "devices"},
+	{key: pageSongs, label: "歌曲", title: "歌曲", subtitle: "播放记录与歌词管理", icon: "library_music"},
+	{key: pageLogs, label: "日志", title: "日志", subtitle: "软件运行记录", icon: "article"},
+	{key: pageSettings, label: "设置", title: "设置", subtitle: "连接、媒体和歌词偏好", icon: "settings"},
 }
 
 type palette struct {
-	surface   color.NRGBA
-	panel     color.NRGBA
-	muted     color.NRGBA
-	text      color.NRGBA
-	subtle    color.NRGBA
-	border    color.NRGBA
-	primary   color.NRGBA
-	success   color.NRGBA
-	warning   color.NRGBA
-	danger    color.NRGBA
-	barBase   color.NRGBA
-	barAccent color.NRGBA
+	surface            color.NRGBA
+	panel              color.NRGBA
+	muted              color.NRGBA
+	text               color.NRGBA
+	subtle             color.NRGBA
+	border             color.NRGBA
+	primary            color.NRGBA
+	onPrimary          color.NRGBA
+	primaryContainer   color.NRGBA
+	onPrimaryContainer color.NRGBA
+	success            color.NRGBA
+	onSuccess          color.NRGBA
+	warning            color.NRGBA
+	onWarning          color.NRGBA
+	danger             color.NRGBA
+	onDanger           color.NRGBA
+	barBase            color.NRGBA
+	barAccent          color.NRGBA
 }
 
 func root(ctx *flux.Context, store *storepkg.Store, runtime *app.Runtime) flux.Element {
-	colors := appPalette()
+	colors := appPalette(flux.UseTheme(ctx))
 	snapshot := useStoreSnapshot(ctx, store)
 	activePage := flux.UseState(ctx, pageDashboard)
 	urlState := flux.UseState(ctx, snapshot.Config.AMLL.URL)
@@ -150,6 +158,7 @@ func pageBody(
 	runtime *app.Runtime,
 	compact bool,
 ) flux.Element {
+	waveform := useStableWaveform(ctx, snapshot.Audio.Spectrum, waveformBarCount)
 	switch page {
 	case pageSessions:
 		return sessionsPage(colors, snapshot, notice, runtime)
@@ -160,7 +169,7 @@ func pageBody(
 	case pageSettings:
 		return settingsPage(colors, snapshot, urlState, notice, store, runtime)
 	default:
-		return dashboardPage(colors, snapshot, notice, runtime, compact)
+		return dashboardPage(colors, snapshot, notice, runtime, compact, waveform)
 	}
 }
 
@@ -173,7 +182,7 @@ func navRail(colors palette, snapshot model.Snapshot, activePage stringState) fl
 		flux.NavigationRailFooter(flux.Text(strings.ToUpper(blankAs(snapshot.AMLL.Status, "off")), flux.TextSize(10))),
 		flux.NavigationRailActiveColor(colors.primary),
 		flux.NavigationRailInactiveColor(colors.subtle),
-		flux.NavigationRailDecoration(flux.Bg(colors.panel).WithBorder(flux.Border{Width: 1, Color: colors.border})),
+		flux.NavigationRailDecoration(flux.Bg(colors.muted).WithBorder(flux.Border{Width: 1, Color: colors.border})),
 		flux.NavigationRailOnChange(func(ctx *flux.Context, key string) {
 			activePage.Set(key)
 		}),
@@ -186,7 +195,7 @@ func navItems() []flux.ElementNavItem {
 		items = append(items, flux.ElementNavItem{
 			Key:   page.key,
 			Label: page.label,
-			Icon:  flux.IconElement(page.icon),
+			Icon:  flux.IconElement(page.icon, flux.IconSize(22)),
 		})
 	}
 	return items
@@ -207,8 +216,7 @@ func pageHeader(colors palette, snapshot model.Snapshot, page pageInfo, notice s
 	if strings.TrimSpace(notice) != "" {
 		subtitle = notice
 	}
-	return flux.ContainerDecorationElement(
-		flux.Bg(colors.panel).WithPad(flux.Symmetric(14, 16)).WithRad(8),
+	return flux.FilledCardElement(
 		flux.RowElement(
 			flux.ColumnElement(
 				flux.TextElement(page.title, flux.TextSize(24), flux.TextColor(colors.text)),
@@ -218,36 +226,8 @@ func pageHeader(colors palette, snapshot model.Snapshot, page pageInfo, notice s
 			flux.ExpandedElement(flux.SpacerElement(0, 0)),
 			statusChip(colors, strings.ToUpper(snapshot.AMLL.Status), statusColor),
 		),
-	)
-}
-
-func dashboardPage(colors palette, snapshot model.Snapshot, notice stringState, runtime *app.Runtime, compact bool) flux.Element {
-	_ = notice
-	_ = runtime
-	main := flux.ColumnElement(
-		mediaPanel(colors, snapshot),
-		flux.VSpacerElement(12),
-		audioPanel(colors, snapshot),
-	)
-	side := flux.ColumnElement(
-		metricsPanel(colors, snapshot),
-		flux.VSpacerElement(12),
-		lyricsPreviewPanel(colors),
-	)
-	if compact {
-		return flux.ScrollViewElement(
-			flux.ColumnElement(
-				main,
-				flux.VSpacerElement(12),
-				side,
-			),
-			flux.ScrollVertical(true),
-		)
-	}
-	return flux.RowElement(
-		flux.ExpandedElement(flux.ScrollViewElement(main, flux.ScrollVertical(true))),
-		flux.HSpacerElement(12),
-		flux.FixedWidthElement(330, flux.ScrollViewElement(side, flux.ScrollVertical(true))),
+		flux.CardPadding(flux.Symmetric(14, 16)),
+		flux.CardRadius(8),
 	)
 }
 
@@ -273,165 +253,6 @@ func songsPage(colors palette, snapshot model.Snapshot) flux.Element {
 	)
 }
 
-func logsPage(colors palette, snapshot model.Snapshot) flux.Element {
-	return flux.ScrollViewElement(
-		flux.ColumnElement(logsPanel(colors, snapshot)),
-		flux.ScrollVertical(true),
-	)
-}
-
-func settingsPage(
-	colors palette,
-	snapshot model.Snapshot,
-	urlState stringState,
-	notice stringState,
-	store *storepkg.Store,
-	runtime *app.Runtime,
-) flux.Element {
-	return flux.ScrollViewElement(
-		flux.ColumnElement(
-			connectionPanel(colors, snapshot, urlState, notice, store, runtime),
-			flux.VSpacerElement(12),
-			panel(colors,
-				sectionTitle(colors, "媒体"),
-				flux.VSpacerElement(10),
-				infoLine(colors, "SMTC", sessionMode(snapshot)),
-				infoLine(colors, "音频数据", yesNo(snapshot.Config.AMLL.SendAudio)),
-			),
-			flux.VSpacerElement(12),
-			panel(colors,
-				sectionTitle(colors, "歌词"),
-				flux.VSpacerElement(10),
-				emptyBox(colors, "暂无歌词设置"),
-			),
-			flux.VSpacerElement(12),
-			panel(colors,
-				sectionTitle(colors, "AI"),
-				flux.VSpacerElement(10),
-				emptyBox(colors, "暂无 AI 设置"),
-			),
-		),
-		flux.ScrollVertical(true),
-	)
-}
-
-func connectionPanel(
-	colors palette,
-	snapshot model.Snapshot,
-	urlState interface {
-		Value() string
-		Set(string)
-	},
-	notice interface {
-		Value() string
-		Set(string)
-	},
-	store *storepkg.Store,
-	runtime *app.Runtime,
-) flux.Element {
-	connect := func(ctx *flux.Context) {
-		url := strings.TrimSpace(urlState.Value())
-		if err := runtime.ConnectAMLL(url); err != nil {
-			message := "Connect failed: " + err.Error()
-			notice.Set(message)
-			store.AddLog(message)
-			return
-		}
-		notice.Set("Connecting AMLL server")
-	}
-	disconnect := func(ctx *flux.Context) {
-		if err := runtime.DisconnectAMLL(); err != nil {
-			message := "Disconnect failed: " + err.Error()
-			notice.Set(message)
-			store.AddLog(message)
-			return
-		}
-		notice.Set("AMLL disconnected")
-	}
-	sendSnapshot := func(ctx *flux.Context) {
-		if err := runtime.SendSnapshot(); err != nil {
-			message := "Snapshot failed: " + err.Error()
-			notice.Set(message)
-			store.AddLog(message)
-			return
-		}
-		notice.Set("Snapshot sent")
-	}
-
-	return panel(colors,
-		sectionTitle(colors, "AMLL 连接"),
-		flux.VSpacerElement(10),
-		label(colors, "WebSocket 地址"),
-		flux.VSpacerElement(6),
-		flux.TextFieldElement(
-			urlState.Value(),
-			flux.InputPlaceholder("ws://127.0.0.1:11444"),
-			flux.InputSingleLine(true),
-			flux.InputPadding(flux.Symmetric(10, 12)),
-			flux.InputRadius(8),
-			flux.InputBorder(colors.border),
-			flux.InputBorderFocus(colors.primary),
-			flux.InputBackground(colors.panel),
-			flux.InputForeground(colors.text),
-			flux.InputTextSize(13),
-			flux.InputOnChange(func(ctx *flux.Context, value string) {
-				urlState.Set(value)
-			}),
-		),
-		flux.VSpacerElement(10),
-		flux.RowElement(
-			flux.ExpandedElement(primaryButton(colors, "连接", connect)),
-			flux.HSpacerElement(8),
-			flux.ExpandedElement(secondaryButton(colors, "断开", disconnect)),
-		),
-		flux.VSpacerElement(8),
-		flux.RowElement(
-			flux.ExpandedElement(secondaryButton(colors, "发送快照", sendSnapshot)),
-			flux.HSpacerElement(8),
-			flux.ExpandedElement(audioSwitch(colors, snapshot.Config.AMLL.SendAudio, notice, store, runtime)),
-		),
-		flux.VSpacerElement(12),
-		infoLine(colors, "状态", snapshot.AMLL.Status),
-		infoLine(colors, "消息", clipText(snapshot.AMLL.Message, 42)),
-		infoLine(colors, "最后接收", formatClock(snapshot.AMLL.LastMessageAt)),
-	)
-}
-
-func audioSwitch(
-	colors palette,
-	checked bool,
-	notice interface {
-		Value() string
-		Set(string)
-	},
-	store *storepkg.Store,
-	runtime *app.Runtime,
-) flux.Element {
-	return flux.ContainerDecorationElement(
-		flux.Bg(colors.muted).WithPad(flux.Symmetric(8, 10)).WithRad(8),
-		flux.RowElement(
-			flux.SwitchElement(
-				checked,
-				flux.SwitchOnChange(func(ctx *flux.Context, enabled bool) {
-					if err := runtime.ToggleSendAudio(enabled); err != nil {
-						message := "Audio toggle failed: " + err.Error()
-						notice.Set(message)
-						store.AddLog(message)
-						return
-					}
-					if enabled {
-						notice.Set("Audio sending enabled")
-					} else {
-						notice.Set("Audio sending disabled")
-					}
-				}),
-			),
-			flux.HSpacerElement(8),
-			flux.TextElement("音频", flux.TextSize(13), flux.TextColor(colors.text)),
-		),
-	)
-}
-
 func metricsPanel(colors palette, snapshot model.Snapshot) flux.Element {
 	return panel(colors,
 		sectionTitle(colors, "连接统计"),
@@ -444,100 +265,11 @@ func metricsPanel(colors palette, snapshot model.Snapshot) flux.Element {
 	)
 }
 
-func mediaPanel(colors palette, snapshot model.Snapshot) flux.Element {
-	progress := playbackProgress(snapshot.Track, snapshot.Playback)
-	return panel(colors,
-		sectionTitle(colors, "当前播放"),
-		flux.VSpacerElement(12),
-		flux.TextElement(clipText(blankAs(snapshot.Track.Title, "暂无歌曲"), 68), flux.TextSize(22), flux.TextColor(colors.text)),
-		flux.VSpacerElement(4),
-		flux.TextElement(clipText(blankAs(snapshot.Track.Artist, "未知艺人"), 82), flux.TextSize(13), flux.TextColor(colors.subtle)),
-		flux.VSpacerElement(12),
-		flux.ProgressBarElement(
-			progress*100,
-			flux.ProgressMin(0),
-			flux.ProgressMax(100),
-			flux.ProgressTrackColor(colors.barBase),
-			flux.ProgressFillColor(colors.primary),
-		),
-		flux.VSpacerElement(8),
-		flux.RowElement(
-			flux.TextElement(formatMillis(snapshot.Playback.Position), flux.TextSize(12), flux.TextColor(colors.subtle)),
-			flux.ExpandedElement(flux.SpacerElement(0, 0)),
-			flux.TextElement(formatMillis(snapshot.Track.Duration), flux.TextSize(12), flux.TextColor(colors.subtle)),
-		),
-		flux.VSpacerElement(12),
-		flux.RowElement(
-			infoTile(colors, "状态", snapshot.Playback.State),
-			flux.HSpacerElement(8),
-			infoTile(colors, "来源", clipText(snapshot.Track.SourceApp, 20)),
-			flux.HSpacerElement(8),
-			infoTile(colors, "控制", yesNo(snapshot.Playback.CanControl)),
-		),
-	)
-}
-
-func audioPanel(colors palette, snapshot model.Snapshot) flux.Element {
-	rms := clamp01(snapshot.Audio.RMS)
-	peak := clamp01(snapshot.Audio.Peak)
-	volume := clamp01(snapshot.Playback.Volume)
-	return panel(colors,
-		sectionTitle(colors, "音频波形"),
-		flux.VSpacerElement(12),
-		levelRow(colors, "音量", volume, colors.primary),
-		flux.VSpacerElement(8),
-		levelRow(colors, "电平", rms, colors.success),
-		flux.VSpacerElement(8),
-		levelRow(colors, "峰值", peak, colors.warning),
-		flux.VSpacerElement(14),
-		spectrumBars(colors, snapshot.Audio.Spectrum),
-	)
-}
-
-func logsPanel(colors palette, snapshot model.Snapshot) flux.Element {
-	logs := snapshot.Logs
-	if len(logs) > 80 {
-		logs = logs[len(logs)-80:]
-	}
-	items := make([]flux.Element, 0, len(logs))
-	for _, entry := range logs {
-		items = append(items,
-			flux.ContainerDecorationElement(
-				flux.Bg(colors.muted).WithPad(flux.Symmetric(7, 9)).WithRad(6),
-				flux.TextElement(clipText(entry, 72), flux.TextSize(11), flux.TextColor(colors.text)),
-			),
-			flux.VSpacerElement(6),
-		)
-	}
-	if len(items) == 0 {
-		items = append(items, emptyBox(colors, "暂无日志"))
-	}
-	return panel(colors,
-		sectionTitle(colors, "日志"),
-		flux.VSpacerElement(10),
-		flux.FixedHeightElement(
-			280,
-			flux.ScrollViewElement(
-				flux.ColumnElement(items...),
-				flux.ScrollVertical(true),
-				flux.ScrollAutoToEndKey(len(logs)),
-			),
-		),
-	)
-}
-
-func lyricsPreviewPanel(colors palette) flux.Element {
-	return panel(colors,
-		sectionTitle(colors, "歌词"),
-		flux.VSpacerElement(12),
-		emptyBox(colors, "暂无歌词"),
-	)
-}
-
 func panel(colors palette, children ...flux.Element) flux.Element {
-	return flux.ContainerDecorationElement(
-		flux.Bg(colors.panel).WithPad(flux.All(14)).WithRad(8),
+	return flux.OutlinedCardElement(
 		flux.ColumnElement(children...),
+		flux.CardPadding(flux.All(14)),
+		flux.CardRadius(8),
 	)
 }
 
@@ -550,23 +282,17 @@ func label(colors palette, text string) flux.Element {
 }
 
 func primaryButton(colors palette, text string, onClick func(ctx *flux.Context)) flux.Element {
-	return flux.ButtonElement(
+	return flux.FilledButtonElement(
 		flux.TextElement(text),
 		flux.ButtonPadding(flux.Symmetric(8, 12)),
-		flux.ButtonRadius(8),
-		flux.ButtonBackground(colors.primary),
-		flux.ButtonForeground(flux.NRGBA(255, 255, 255, 255)),
 		flux.OnClick(onClick),
 	)
 }
 
 func secondaryButton(colors palette, text string, onClick func(ctx *flux.Context)) flux.Element {
-	return flux.ButtonElement(
+	return flux.FilledTonalButtonElement(
 		flux.TextElement(text),
 		flux.ButtonPadding(flux.Symmetric(8, 12)),
-		flux.ButtonRadius(8),
-		flux.ButtonBackground(colors.muted),
-		flux.ButtonForeground(colors.text),
 		flux.OnClick(onClick),
 	)
 }
@@ -675,7 +401,7 @@ func emptyBox(colors palette, text string) flux.Element {
 func statusChip(colors palette, text string, bg color.NRGBA) flux.Element {
 	return flux.ContainerDecorationElement(
 		flux.Bg(bg).WithPad(flux.Symmetric(5, 9)).WithRad(999),
-		flux.TextElement(text, flux.TextSize(11), flux.TextColor(flux.NRGBA(255, 255, 255, 255))),
+		flux.TextElement(text, flux.TextSize(11), flux.TextColor(statusForeground(colors, bg))),
 	)
 }
 
@@ -770,19 +496,50 @@ func statusColor(colors palette, status string) color.NRGBA {
 	}
 }
 
-func appPalette() palette {
+func appTheme() *flux.Theme {
+	return flux.NewTheme(flux.LightColors())
+}
+
+func appPalette(th *flux.Theme) palette {
+	if th == nil {
+		th = appTheme()
+	}
+	cs := th.Colors
 	return palette{
-		surface:   flux.NRGBA(238, 241, 245, 255),
-		panel:     flux.NRGBA(255, 255, 255, 255),
-		muted:     flux.NRGBA(244, 247, 250, 255),
-		text:      flux.NRGBA(23, 31, 42, 255),
-		subtle:    flux.NRGBA(91, 104, 120, 255),
-		border:    flux.NRGBA(205, 213, 224, 255),
-		primary:   flux.NRGBA(15, 118, 110, 255),
-		success:   flux.NRGBA(22, 163, 74, 255),
-		warning:   flux.NRGBA(217, 119, 6, 255),
-		danger:    flux.NRGBA(220, 38, 38, 255),
-		barBase:   flux.NRGBA(226, 232, 240, 255),
-		barAccent: flux.NRGBA(37, 99, 235, 255),
+		surface:            cs.SurfaceContainerLowest,
+		panel:              cs.Surface,
+		muted:              cs.SurfaceContainerHigh,
+		text:               cs.OnSurface,
+		subtle:             cs.OnSurfaceVariant,
+		border:             cs.OutlineVariant,
+		primary:            cs.Primary,
+		onPrimary:          cs.OnPrimary,
+		primaryContainer:   cs.PrimaryContainer,
+		onPrimaryContainer: cs.OnPrimaryContainer,
+		success:            cs.Success,
+		onSuccess:          cs.OnSuccess,
+		warning:            cs.Warning,
+		onWarning:          cs.OnWarning,
+		danger:             cs.Error,
+		onDanger:           cs.OnError,
+		barBase:            cs.SurfaceContainerHighest,
+		barAccent:          cs.Primary,
+	}
+}
+
+func statusForeground(colors palette, bg color.NRGBA) color.NRGBA {
+	switch bg {
+	case colors.success:
+		return colors.onSuccess
+	case colors.warning:
+		return colors.onWarning
+	case colors.danger:
+		return colors.onDanger
+	case colors.primary:
+		return colors.onPrimary
+	case colors.primaryContainer:
+		return colors.onPrimaryContainer
+	default:
+		return colors.panel
 	}
 }

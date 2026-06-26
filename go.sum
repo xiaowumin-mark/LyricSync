@@ -15,6 +15,12 @@ github.com/worldiety/material-color-utilities v0.0.0-20250324124753-a84b74640c16
 github.com/worldiety/material-color-utilities v0.0.0-20250324124753-a84b74640c16/go.mod h1:UX8Sb7OvGA+gh+NSJKqUsslZ7Ao7ftYVzutt70hcL9g=
 github.com/xiaowumin-mark/FluxUI v0.0.0-20260619134820-b0db90ad8dcc h1:KCs6KL+XyVGmfjk798vzu40xIeEafmmxB4bXeoKhcxQ=
 github.com/xiaowumin-mark/FluxUI v0.0.0-20260619134820-b0db90ad8dcc/go.mod h1:oTSfk00fMmDCQSu9uHcLvCIkcN3wIHcfJjv7+6MgexA=
+github.com/xiaowumin-mark/FluxUI v0.0.0-20260626130203-a01795e7fa87 h1:pPyNg19fC25MGneKrpjxY0HDKF17ciQhaRPDGI/D+b0=
+github.com/xiaowumin-mark/FluxUI v0.0.0-20260626130203-a01795e7fa87/go.mod h1:oTSfk00fMmDCQSu9uHcLvCIkcN3wIHcfJjv7+6MgexA=
+github.com/xiaowumin-mark/FluxUI v0.0.0-20260626144347-16f8f140a4ab h1:WOkWhwjseoI7gpWHlIc0OuJwQZkYAFWE60nGIxJVuxs=
+github.com/xiaowumin-mark/FluxUI v0.0.0-20260626144347-16f8f140a4ab/go.mod h1:oTSfk00fMmDCQSu9uHcLvCIkcN3wIHcfJjv7+6MgexA=
+github.com/xiaowumin-mark/FluxUI v0.0.0-20260626151648-27e48f607c99 h1:7P7pErtz0/ytD3Nz6bKGk3UxmCcVn7pkcP6ilrku/aI=
+github.com/xiaowumin-mark/FluxUI v0.0.0-20260626151648-27e48f607c99/go.mod h1:oTSfk00fMmDCQSu9uHcLvCIkcN3wIHcfJjv7+6MgexA=
 github.com/xiaowumin-mark/smtc-suite-go v0.2.0 h1:tH6zcVUueeKR0us7a+Us3fClcFF74/TIHs+27fpqCnM=
 github.com/xiaowumin-mark/smtc-suite-go v0.2.0/go.mod h1:qxNDC+mI2MLJyuo1kKkkT/F1kTdmleA2jq82tRDYWT8=
 github.com/xiaowumin-mark/smtc-suite-go v0.2.1-0.20260625121621-ebd4403094c3 h1:X2jVxJiwLP+Zqeal1kBRvAI/aVT1ScZVS7sAp7z2Mvc=

@@ -4,7 +4,7 @@ go 1.25.1
 
 require (
 	github.com/gorilla/websocket v1.5.3
-	github.com/xiaowumin-mark/FluxUI v0.0.0-20260619134820-b0db90ad8dcc
+	github.com/xiaowumin-mark/FluxUI v0.0.0-20260626151648-27e48f607c99
 	github.com/xiaowumin-mark/smtc-suite-go v0.2.1-0.20260625121621-ebd4403094c3
 )
 

@@ -8,6 +8,8 @@ import (
 	"github.com/xiaowumin-mark/LyricSync/internal/model"
 )
 
+const maxLogs = 50
+
 type Store struct {
 	mu          sync.RWMutex
 	config      model.Config
@@ -27,7 +29,7 @@ func New(cfg model.Config) *Store {
 		track: model.Track{
 			ID:        "idle",
 			Title:     "Waiting for playback",
-			Artist:    "LyricSync Basic",
+			Artist:    "LyricSync",
 			SourceApp: "System",
 		},
 		playback: model.Playback{
@@ -40,7 +42,7 @@ func New(cfg model.Config) *Store {
 			Status:  "disconnected",
 			Message: "not connected",
 		},
-		logs:        []string{now + " LyricSync Basic started"},
+		logs:        []string{now + " LyricSync started"},
 		subscribers: map[chan model.Event]struct{}{},
 	}
 }
@@ -134,8 +136,8 @@ func (s *Store) AddLog(message string) {
 	s.mu.Lock()
 	line := time.Now().Format("15:04:05") + " " + message
 	s.logs = append(s.logs, line)
-	if len(s.logs) > 200 {
-		s.logs = append([]string(nil), s.logs[len(s.logs)-200:]...)
+	if len(s.logs) > maxLogs {
+		s.logs = append([]string(nil), s.logs[len(s.logs)-maxLogs:]...)
 	}
 	s.publishLocked("log", line)
 	s.mu.Unlock()

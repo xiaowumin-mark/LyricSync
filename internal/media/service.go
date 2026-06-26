@@ -174,7 +174,7 @@ func idleTrack(title string) model.Track {
 	return model.Track{
 		ID:        "idle",
 		Title:     title,
-		Artist:    "LyricSync Basic",
+		Artist:    "LyricSync",
 		SourceApp: "System",
 	}
 }
@@ -532,7 +532,7 @@ func formatName(format suiteaudio.Format) string {
 func (s *Service) startSMTCSimulator(ctx context.Context) {
 	track := model.Track{
 		ID:        "demo-track",
-		Title:     "LyricSync Basic Demo",
+		Title:     "LyricSync Demo",
 		Artist:    "Local Session",
 		Album:     "Development",
 		SourceApp: "Simulator",
@@ -542,7 +542,7 @@ func (s *Service) startSMTCSimulator(ctx context.Context) {
 	s.store.SetSessions([]model.Session{{
 		ID:        "demo-session",
 		Name:      "SMTC Simulator",
-		AppID:     "lyricsync.basic",
+		AppID:     "lyricsync",
 		Title:     track.Title,
 		Artist:    track.Artist,
 		Album:     track.Album,
@@ -571,7 +571,7 @@ func (s *Service) startSMTCSimulator(ctx context.Context) {
 				s.store.SetSessions([]model.Session{{
 					ID:        "demo-session",
 					Name:      "SMTC Simulator",
-					AppID:     "lyricsync.basic",
+					AppID:     "lyricsync",
 					Title:     track.Title,
 					Artist:    track.Artist,
 					Album:     track.Album,
