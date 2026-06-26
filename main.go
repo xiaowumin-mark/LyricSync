@@ -1,44 +1,36 @@
 package main
 
 import (
-	"embed"
+	"context"
+	"log"
+	"os"
+	"os/signal"
+	"syscall"
 
-	"github.com/wailsapp/wails/v2"
-	"github.com/wailsapp/wails/v2/pkg/options"
-	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
+	"github.com/xiaowumin-mark/LyricSync/internal/app"
+	"github.com/xiaowumin-mark/LyricSync/internal/config"
+	"github.com/xiaowumin-mark/LyricSync/internal/state"
+	"github.com/xiaowumin-mark/LyricSync/internal/ui"
 )
 
-//go:embed all:frontend/dist
-var assets embed.FS
-
 func main() {
-	app := NewApp()
-	cfg := app.manager.State.Config()
-
-	err := wails.Run(&options.App{
-		Title:             "LyricSync",
-		Width:             1180,
-		Height:            760,
-		MinWidth:          980,
-		MinHeight:         660,
-		StartHidden:       cfg.UI.StartHidden,
-		HideWindowOnClose: false,
-		AssetServer: &assetserver.Options{
-			Assets: assets,
-		},
-		BackgroundColour: &options.RGBA{R: 18, G: 18, B: 20, A: 1},
-		OnStartup:        app.startup,
-		OnShutdown:       app.shutdown,
-		OnBeforeClose:    app.beforeClose,
-		DragAndDrop: &options.DragAndDrop{
-			EnableFileDrop: true,
-		},
-		Bind: []interface{}{
-			app,
-		},
-	})
-
+	cfg, err := config.Load()
 	if err != nil {
-		println("Error:", err.Error())
+		log.Printf("load config: %v", err)
+		cfg = config.Default()
+	}
+
+	store := state.New(cfg)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	runtime := app.New(store)
+	if err := runtime.Start(ctx); err != nil {
+		store.AddLog("runtime start failed: " + err.Error())
+	}
+	defer runtime.Stop()
+
+	if err := ui.Run(ctx, store, runtime); err != nil {
+		log.Fatal(err)
 	}
 }
