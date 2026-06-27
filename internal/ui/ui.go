@@ -47,14 +47,15 @@ type pageInfo struct {
 	title    string
 	subtitle string
 	icon     string
+	path     string
 }
 
 var appPages = []pageInfo{
-	{key: pageDashboard, label: "仪表盘", title: "仪表盘", subtitle: "当前监听会话的播放状态", icon: "dashboard"},
-	{key: pageSessions, label: "会话", title: "会话", subtitle: "SMTC 会话管理", icon: "devices"},
-	{key: pageSongs, label: "歌曲", title: "歌曲", subtitle: "播放记录与歌词管理", icon: "library_music"},
-	{key: pageLogs, label: "日志", title: "日志", subtitle: "软件运行记录", icon: "article"},
-	{key: pageSettings, label: "设置", title: "设置", subtitle: "连接、媒体和歌词偏好", icon: "settings"},
+	{key: pageDashboard, label: "仪表盘", title: "仪表盘", subtitle: "当前监听会话的播放状态", icon: "dashboard", path: "/dashboard"},
+	{key: pageSessions, label: "会话", title: "会话", subtitle: "SMTC 会话管理", icon: "devices", path: "/sessions"},
+	{key: pageSongs, label: "歌曲", title: "歌曲", subtitle: "播放记录与歌词管理", icon: "library_music", path: "/songs"},
+	{key: pageLogs, label: "日志", title: "日志", subtitle: "软件运行记录", icon: "article", path: "/logs"},
+	{key: pageSettings, label: "设置", title: "设置", subtitle: "连接、媒体和歌词偏好", icon: "settings", path: "/settings"},
 }
 
 type palette struct {
@@ -81,13 +82,12 @@ type palette struct {
 func root(ctx *flux.Context, store *storepkg.Store, runtime *app.Runtime) flux.Element {
 	colors := appPalette(flux.UseTheme(ctx))
 	snapshot := useStoreSnapshot(ctx, store)
-	activePage := flux.UseState(ctx, pageDashboard)
 	urlState := flux.UseState(ctx, snapshot.Config.AMLL.URL)
 	notice := flux.UseState(ctx, "")
 
 	return flux.ContainerDecorationElement(
 		flux.Bg(colors.surface),
-		appShell(ctx, colors, snapshot, activePage, urlState, notice, store, runtime),
+		appShell(ctx, colors, snapshot, urlState, notice, store, runtime),
 	)
 }
 
@@ -124,58 +124,75 @@ func appShell(
 	ctx *flux.Context,
 	colors palette,
 	snapshot model.Snapshot,
-	activePage stringState,
 	urlState stringState,
 	notice stringState,
 	store *storepkg.Store,
 	runtime *app.Runtime,
 ) flux.Element {
-	page := currentPage(activePage.Value())
+	currentPath := flux.CurrentPath(ctx)
+	page := currentPageForPath(currentPath)
 	compact := ctx.MaxConstraints().X < 880
 	content := flux.ContainerDecorationElement(
 		flux.Bg(colors.surface).WithPad(flux.All(18)),
 		flux.ColumnElement(
 			pageHeader(colors, snapshot, page, notice.Value()),
 			flux.VSpacerElement(14),
-			flux.ExpandedElement(pageBody(ctx, colors, snapshot, activePage.Value(), urlState, notice, store, runtime, compact)),
+			flux.ExpandedElement(appRouter(colors, snapshot, urlState, notice, store, runtime, compact)),
 		),
 	)
 
 	return flux.RowElement(
-		navRail(colors, snapshot, activePage),
+		navRail(colors, snapshot, page.key),
 		flux.ExpandedElement(content),
 	)
 }
 
-func pageBody(
-	ctx *flux.Context,
+func appRouter(
 	colors palette,
 	snapshot model.Snapshot,
-	page string,
 	urlState stringState,
 	notice stringState,
 	store *storepkg.Store,
 	runtime *app.Runtime,
 	compact bool,
 ) flux.Element {
-	waveform := useStableWaveform(ctx, snapshot.Audio.Spectrum, waveformBarCount)
-	switch page {
-	case pageSessions:
-		return sessionsPage(colors, snapshot, notice, runtime)
-	case pageSongs:
-		return songsPage(colors, snapshot)
-	case pageLogs:
-		return logsPage(colors, snapshot)
-	case pageSettings:
-		return settingsPage(colors, snapshot, urlState, notice, store, runtime)
-	default:
-		return dashboardPage(colors, snapshot, notice, runtime, compact, waveform)
-	}
+	return flux.RouterElement(
+		flux.RouteElement("/dashboard", func(routeCtx *flux.Context) flux.Element {
+			waveform := useStableWaveform(routeCtx, snapshot.Audio.Spectrum, waveformBarCount)
+			return dashboardPage(colors, snapshot, notice, runtime, compact, waveform)
+		}, flux.RouteName(pageDashboard), flux.RouteTitle("仪表盘")),
+		flux.RouteElement("/sessions", func(routeCtx *flux.Context) flux.Element {
+			return sessionsPage(colors, snapshot, notice, runtime)
+		}, flux.RouteName(pageSessions), flux.RouteTitle("会话")),
+		flux.RouteElement("/songs", func(routeCtx *flux.Context) flux.Element {
+			return songsPage(routeCtx, colors, snapshot, notice, store, runtime)
+		}, flux.RouteName(pageSongs), flux.RouteTitle("歌曲")),
+		flux.RouteElement("/songs/all", func(routeCtx *flux.Context) flux.Element {
+			return songsPage(routeCtx, colors, snapshot, notice, store, runtime)
+		}, flux.RouteName("songs-all"), flux.RouteTitle("全部歌曲")),
+		flux.RouteElement("/songs/new", func(routeCtx *flux.Context) flux.Element {
+			return songsPage(routeCtx, colors, snapshot, notice, store, runtime)
+		}, flux.RouteName("songs-new"), flux.RouteTitle("新增歌曲")),
+		flux.RouteElement("/songs/:id/edit", func(routeCtx *flux.Context) flux.Element {
+			return songsPage(routeCtx, colors, snapshot, notice, store, runtime)
+		}, flux.RouteName("song-edit"), flux.RouteTitle("编辑歌曲")),
+		flux.RouteElement("/songs/:id", func(routeCtx *flux.Context) flux.Element {
+			return songsPage(routeCtx, colors, snapshot, notice, store, runtime)
+		}, flux.RouteName("song-detail"), flux.RouteTitle("歌曲详情")),
+		flux.RouteElement("/logs", func(routeCtx *flux.Context) flux.Element {
+			return logsPage(colors, snapshot)
+		}, flux.RouteName(pageLogs), flux.RouteTitle("日志")),
+		flux.RouteElement("/settings", func(routeCtx *flux.Context) flux.Element {
+			return settingsPage(colors, snapshot, urlState, notice, store, runtime)
+		}, flux.RouteName(pageSettings), flux.RouteTitle("设置")),
+	).With(
+		flux.RouterNotFoundElement(appNotFoundPage(colors)),
+	)
 }
 
-func navRail(colors palette, snapshot model.Snapshot, activePage stringState) flux.Element {
+func navRail(colors palette, snapshot model.Snapshot, activePage string) flux.Element {
 	return flux.NavigationRailElement(
-		activePage.Value(),
+		activePage,
 		navItems(),
 		flux.NavigationRailWidth(92),
 		flux.NavigationRailHeader(flux.Text("LS", flux.TextSize(16))),
@@ -184,7 +201,9 @@ func navRail(colors palette, snapshot model.Snapshot, activePage stringState) fl
 		flux.NavigationRailInactiveColor(colors.subtle),
 		flux.NavigationRailDecoration(flux.Bg(colors.muted).WithBorder(flux.Border{Width: 1, Color: colors.border})),
 		flux.NavigationRailOnChange(func(ctx *flux.Context, key string) {
-			activePage.Set(key)
+			if path := pagePath(key); path != "" {
+				flux.NavigateReplace(ctx, path, flux.WithNavTransition(flux.TransitionFade))
+			}
 		}),
 	)
 }
@@ -210,6 +229,46 @@ func currentPage(key string) pageInfo {
 	return appPages[0]
 }
 
+func currentPageForPath(path string) pageInfo {
+	path = strings.TrimSpace(path)
+	if path == "" || path == "/" {
+		return currentPage(pageDashboard)
+	}
+	for _, page := range appPages {
+		if path == page.path || strings.HasPrefix(path, page.path+"/") {
+			return page
+		}
+	}
+	return currentPage(pageDashboard)
+}
+
+func pagePath(key string) string {
+	for _, page := range appPages {
+		if page.key == key {
+			return page.path
+		}
+	}
+	return ""
+}
+
+func appNotFoundPage(colors palette) flux.Component {
+	return func(ctx *flux.Context) flux.Element {
+		return flux.CenterElement(
+			flux.ColumnElement(
+				flux.IconElement("error", flux.IconSize(32), flux.IconColor(colors.danger)),
+				flux.VSpacerElement(10),
+				flux.TextElement("页面不存在", flux.TextSize(18), flux.TextColor(colors.text), flux.TextAlign(flux.AlignCenter)),
+				flux.VSpacerElement(8),
+				flux.TextElement(blankAs(flux.CurrentPath(ctx), "-"), flux.TextSize(12), flux.TextColor(colors.subtle), flux.TextAlign(flux.AlignCenter)),
+				flux.VSpacerElement(14),
+				secondaryButton(colors, "返回仪表盘", func(ctx *flux.Context) {
+					flux.NavigateReplace(ctx, "/dashboard", flux.WithNavTransition(flux.TransitionSlideRight))
+				}),
+			),
+		)
+	}
+}
+
 func pageHeader(colors palette, snapshot model.Snapshot, page pageInfo, notice string) flux.Element {
 	statusColor := statusColor(colors, snapshot.AMLL.Status)
 	subtitle := fmt.Sprintf("AMLL %s | %s | %s", snapshot.AMLL.Status, snapshot.Playback.State, formatClock(snapshot.UpdatedAt))
@@ -228,28 +287,6 @@ func pageHeader(colors palette, snapshot model.Snapshot, page pageInfo, notice s
 		),
 		flux.CardPadding(flux.Symmetric(14, 16)),
 		flux.CardRadius(8),
-	)
-}
-
-func songsPage(colors palette, snapshot model.Snapshot) flux.Element {
-	return flux.ScrollViewElement(
-		flux.ColumnElement(
-			panel(colors,
-				sectionTitle(colors, "歌曲"),
-				flux.VSpacerElement(12),
-				emptyBox(colors, "暂无歌曲记录"),
-			),
-			flux.VSpacerElement(12),
-			panel(colors,
-				sectionTitle(colors, "当前歌曲"),
-				flux.VSpacerElement(10),
-				infoLine(colors, "标题", blankAs(snapshot.Track.Title, "-")),
-				infoLine(colors, "艺人", blankAs(snapshot.Track.Artist, "-")),
-				infoLine(colors, "专辑", blankAs(snapshot.Track.Album, "-")),
-				infoLine(colors, "时长", formatMillis(snapshot.Track.Duration)),
-			),
-		),
-		flux.ScrollVertical(true),
 	)
 }
 

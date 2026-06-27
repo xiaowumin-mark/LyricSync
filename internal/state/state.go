@@ -143,6 +143,12 @@ func (s *Store) AddLog(message string) {
 	s.mu.Unlock()
 }
 
+func (s *Store) Notify(eventType string, payload any) {
+	s.mu.Lock()
+	s.publishLocked(eventType, payload)
+	s.mu.Unlock()
+}
+
 func (s *Store) Subscribe(buffer int) (<-chan model.Event, func()) {
 	if buffer < 1 {
 		buffer = 1
