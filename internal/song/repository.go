@@ -297,12 +297,17 @@ func (r *Repository) Lyrics(ctx context.Context, songID int64) ([]LyricSource, e
 }
 
 func (r *Repository) SetLyric(ctx context.Context, songID int64, source string, rawLyric string, ttmlLyric string) error {
+	return r.SetLyricWithMeta(ctx, songID, source, "", rawLyric, ttmlLyric)
+}
+
+func (r *Repository) SetLyricWithMeta(ctx context.Context, songID int64, source string, sourceTrackID string, rawLyric string, ttmlLyric string) error {
 	if r == nil || r.db == nil {
 		return fmt.Errorf("song database is not available")
 	}
 	if !validSource(source) {
 		return fmt.Errorf("%w: invalid lyric source %q", ErrInvalidInput, source)
 	}
+	sourceTrackID = strings.TrimSpace(sourceTrackID)
 	if _, err := r.Get(ctx, songID); err != nil {
 		return err
 	}
@@ -313,20 +318,58 @@ func (r *Repository) SetLyric(ctx context.Context, songID int64, source string, 
 	now := time.Now().UTC()
 	_, err = r.db.ExecContext(ctx, `
 		INSERT INTO lyric_sources (
-			song_id, source, raw_lyric, ttml_lyric, available,
+			song_id, source, source_track_id, raw_lyric, ttml_lyric, available,
 			has_translation, has_transliteration, updated_at
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(song_id, source) DO UPDATE SET
+			source_track_id = CASE
+				WHEN excluded.source_track_id != '' THEN excluded.source_track_id
+				ELSE lyric_sources.source_track_id
+			END,
 			raw_lyric = excluded.raw_lyric,
 			ttml_lyric = excluded.ttml_lyric,
 			available = excluded.available,
 			has_translation = excluded.has_translation,
 			has_transliteration = excluded.has_transliteration,
 			updated_at = excluded.updated_at
-	`, songID, source, rawLyric, normalized.TTML, boolInt(normalized.Available),
+	`, songID, source, sourceTrackID, rawLyric, normalized.TTML, boolInt(normalized.Available),
 		boolInt(normalized.HasTranslation), boolInt(normalized.HasTransliteration), formatDBTime(now))
 	return err
+}
+
+func (r *Repository) ApplyLyricSource(ctx context.Context, songID int64, source string) error {
+	if r == nil || r.db == nil {
+		return fmt.Errorf("song database is not available")
+	}
+	if !validSource(source) {
+		return fmt.Errorf("%w: invalid lyric source %q", ErrInvalidInput, source)
+	}
+	result, err := r.db.ExecContext(ctx, `
+		UPDATE songs
+		SET applied_lyric_source = ?,
+			applied_lyric_id = (
+				SELECT id FROM lyric_sources
+				WHERE song_id = songs.id AND source = ? AND available = 1
+				LIMIT 1
+			),
+			updated_at = ?
+		WHERE id = ? AND EXISTS (
+			SELECT 1 FROM lyric_sources
+			WHERE song_id = songs.id AND source = ? AND available = 1
+		)
+	`, source, source, formatDBTime(time.Now().UTC()), songID, source)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func (r *Repository) ensureLyricSlots(ctx context.Context, songID int64) error {

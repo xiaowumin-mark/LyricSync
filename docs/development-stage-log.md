@@ -898,3 +898,87 @@ go test ./...
 
 - ...
 ````
+## 阶段 7：歌词来源接入与并行搜索
+
+完成日期：2026-06-27
+
+状态：已完成。
+
+### 本阶段目标
+
+- 接入 TTML DB、QQ 音乐、网易云音乐、酷狗音乐。
+- 歌曲变化后并行搜索多个来源。
+- 根据用户设置的搜词优先级选择第一份可用歌词。
+- 本地已有可用歌词时优先使用本地，不等待网络搜索。
+
+### 已完成内容
+
+- 新增歌词搜索服务：
+  - `internal/lyric/SearchService`
+  - `internal/lyric/Provider`
+  - `internal/lyric/ProviderResult`
+- 通过 `go get github.com/xiaowumin-mark/AMLX-MUSIC-API` 接入三平台：
+  - QQ 音乐
+  - 网易云音乐
+  - 酷狗音乐
+- 三平台搜索不再手写平台 HTTP API，统一使用 `AMLX-MUSIC-API` 的 provider。
+- 新增 AMLX 统一模型到 LyricSync 内部歌词结构的转换，覆盖行级歌词、翻译、音译和逐词/音节时间轴。
+- QQ 音乐翻译行 `//` 会在内部统一结构里归一为空翻译。
+- 新增 TTML DB 本地索引缓存、自动更新、手动更新和本地搜索。
+- Runtime 接入自动搜词流程：本地优先，未命中再并行搜索，保存各来源结果后按用户优先级应用。
+- 新增歌词搜索任务取消，快速切歌时取消上一首歌的搜索任务，避免旧结果覆盖新歌曲。
+- 歌曲仓库补齐 `source_track_id` 保存和当前应用歌词来源写入能力。
+
+### 交付物
+
+- 多平台歌词搜索服务：
+  - `internal/lyric/search_service.go`
+  - `internal/lyric/provider_amlx.go`
+  - `internal/lyric/provider_ttmldb.go`
+  - `internal/lyric/source.go`
+- TTML DB 索引缓存：
+  - `internal/paths/paths.go`
+  - `internal/lyric/provider_ttmldb.go`
+- 歌词来源存储增强：
+  - `internal/song/repository.go`
+- 自动搜索与应用流程：
+  - `internal/app/app.go`
+- 设置页手动更新索引：
+  - `internal/ui/settings.go`
+- 测试：
+  - `internal/lyric/source_search_test.go`
+
+### 验证方式
+
+执行：
+```powershell
+go test ./...
+```
+
+结果：
+```text
+通过
+```
+
+### 关键决策
+
+- QQ、网易、酷狗不在本项目内手写平台 API，直接使用 `AMLX-MUSIC-API` 依赖。
+- `/ref/AMLX-MUSIC-API` 继续只作为参考，不直接 import 参考目录代码。
+- TTML DB 不属于 `AMLX-MUSIC-API`，因此保留本项目内独立的索引缓存和搜索逻辑。
+- 搜索并发执行，选择结果严格按设置优先级，而不是按网络返回先后顺序。
+- 本地缓存可用时不启动网络阻塞路径，保证切歌响应和 AMLL 歌词发布速度。
+
+### 遗留问题
+
+- 平台接口可能受网络、风控或版权状态影响，失败时会保留日志并回退到其它可用来源。
+- TTML DB 匹配目前使用标题、艺人、专辑的本地评分，后续可结合更多平台 ID 提高命中率。
+- AI 清洗、AI 翻译和 AI 音译仍留到后续 AI 阶段实现。
+
+### 下一阶段入口
+
+进入阶段 8：歌词任务调度与防堆积。
+
+阶段 8 首要任务：
+- 进一步完善歌词搜索任务队列和 revision 保护。
+- 处理更复杂的快速切歌、AI 长任务和手动应用歌词场景。
+- 增强任务状态日志和 UI 可见反馈。

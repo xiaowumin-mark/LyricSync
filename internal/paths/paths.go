@@ -25,3 +25,11 @@ func DatabasePath() (string, error) {
 	}
 	return filepath.Join(dir, "lyricsync.db"), nil
 }
+
+func TTMLDBCacheDir() (string, error) {
+	dir, err := DataDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "ttmldb"), nil
+}

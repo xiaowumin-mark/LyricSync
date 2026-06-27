@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"strconv"
 	"strings"
 
@@ -281,7 +282,16 @@ func ttmlDBSettingsPanel(colors palette, snapshot model.Snapshot, notice stringS
 		}),
 		flux.VSpacerElement(12),
 		secondaryButton(colors, "立即更新索引", func(ctx *flux.Context) {
-			notice.Set("TTML DB 索引更新将在歌词来源阶段接入")
+			notice.Set("TTML DB 索引正在更新")
+			go func() {
+				if err := runtime.UpdateTTMLDBIndex(context.Background()); err != nil {
+					message := "TTML DB 索引更新失败: " + err.Error()
+					notice.Set(message)
+					store.AddLog(message)
+					return
+				}
+				notice.Set("TTML DB 索引已更新")
+			}()
 		}),
 	)
 }
