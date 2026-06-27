@@ -18,6 +18,8 @@ import (
 type ControlFunc func(command string, positionMs int64) error
 type VolumeFunc func(level float64) error
 
+const progressFrameInterval = time.Second / 60
+
 type Connector struct {
 	store     *state.Store
 	control   ControlFunc
@@ -116,6 +118,22 @@ func (c *Connector) SendSnapshot() error {
 	return nil
 }
 
+func (c *Connector) SendLyricTTML(ttmlText string) error {
+	c.mu.Lock()
+	outgoing := c.outgoing
+	c.mu.Unlock()
+	if outgoing == nil {
+		return fmt.Errorf("amll: not connected")
+	}
+	message := SetLyricTTML(ttmlText)
+	select {
+	case outgoing <- outbound{jsonMessage: &message, messageType: MessageType(message)}:
+		return nil
+	default:
+		return fmt.Errorf("amll: outgoing queue is full")
+	}
+}
+
 func (c *Connector) run(ctx context.Context, rawURL string, sendAudio bool, outgoing <-chan outbound) {
 	dialer := websocket.Dialer{HandshakeTimeout: 10 * time.Second}
 	conn, response, err := dialer.DialContext(ctx, rawURL, nil)
@@ -179,6 +197,10 @@ func (c *Connector) run(ctx context.Context, rawURL string, sendAudio bool, outg
 
 	ping := time.NewTicker(5 * time.Second)
 	defer ping.Stop()
+	progress := time.NewTicker(progressFrameInterval)
+	defer progress.Stop()
+	var lastProgress uint64
+	var hasLastProgress bool
 
 	defer func() {
 		c.clearRuntime(outgoing)
@@ -227,6 +249,23 @@ func (c *Connector) run(ctx context.Context, rawURL string, sendAudio bool, outg
 				c.finishWithError(rawURL, err.Error())
 				return
 			}
+		case <-progress.C:
+			playback := c.store.Playback()
+			if !strings.EqualFold(playback.State, "playing") {
+				hasLastProgress = false
+				continue
+			}
+			currentProgress := uint64(maxInt64(playback.Position, 0))
+			if hasLastProgress && currentProgress == lastProgress {
+				continue
+			}
+			message := Progress(playback)
+			if err := sendJSON(message, MessageType(message)); err != nil {
+				c.finishWithError(rawURL, err.Error())
+				return
+			}
+			lastProgress = currentProgress
+			hasLastProgress = true
 		}
 	}
 }

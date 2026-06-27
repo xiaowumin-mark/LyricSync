@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/xiaowumin-mark/LyricSync/internal/lyric"
 	"github.com/xiaowumin-mark/LyricSync/internal/model"
 )
 
@@ -203,6 +204,12 @@ func TestLyricsSlotsAndUpdate(t *testing.T) {
 	}
 	if !qq.Available || !strings.Contains(qq.RawLyric, "hello") {
 		t.Fatalf("expected QQ lyric to be available, got %#v", qq)
+	}
+	if strings.TrimSpace(qq.TTMLLyric) == "" {
+		t.Fatalf("expected normalized TTML to be generated, got %#v", qq)
+	}
+	if _, err := lyric.ParseTTML(qq.TTMLLyric); err != nil {
+		t.Fatalf("generated TTML should parse: %v", err)
 	}
 }
 

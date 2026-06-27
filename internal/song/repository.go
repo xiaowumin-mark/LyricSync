@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/xiaowumin-mark/LyricSync/internal/lyric"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -304,17 +306,26 @@ func (r *Repository) SetLyric(ctx context.Context, songID int64, source string, 
 	if _, err := r.Get(ctx, songID); err != nil {
 		return err
 	}
+	normalized, err := lyric.NormalizeContent(rawLyric, ttmlLyric)
+	if err != nil {
+		return err
+	}
 	now := time.Now().UTC()
-	available := strings.TrimSpace(rawLyric) != "" || strings.TrimSpace(ttmlLyric) != ""
-	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO lyric_sources (song_id, source, raw_lyric, ttml_lyric, available, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?)
+	_, err = r.db.ExecContext(ctx, `
+		INSERT INTO lyric_sources (
+			song_id, source, raw_lyric, ttml_lyric, available,
+			has_translation, has_transliteration, updated_at
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(song_id, source) DO UPDATE SET
 			raw_lyric = excluded.raw_lyric,
 			ttml_lyric = excluded.ttml_lyric,
 			available = excluded.available,
+			has_translation = excluded.has_translation,
+			has_transliteration = excluded.has_transliteration,
 			updated_at = excluded.updated_at
-	`, songID, source, rawLyric, ttmlLyric, boolInt(available), formatDBTime(now))
+	`, songID, source, rawLyric, normalized.TTML, boolInt(normalized.Available),
+		boolInt(normalized.HasTranslation), boolInt(normalized.HasTransliteration), formatDBTime(now))
 	return err
 }
 
@@ -375,7 +386,53 @@ func (r *Repository) migrate(ctx context.Context) error {
 			return err
 		}
 	}
-	return r.normalizeSongKeys(ctx)
+	if err := r.normalizeSongKeys(ctx); err != nil {
+		return err
+	}
+	return r.normalizeStoredLyrics(ctx)
+}
+
+func (r *Repository) normalizeStoredLyrics(ctx context.Context) error {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT id, raw_lyric, ttml_lyric
+		FROM lyric_sources
+		WHERE raw_lyric != '' OR ttml_lyric != ''
+	`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	type row struct {
+		id   int64
+		raw  string
+		ttml string
+	}
+	var rowsToUpdate []row
+	for rows.Next() {
+		var item row
+		if err := rows.Scan(&item.id, &item.raw, &item.ttml); err != nil {
+			return err
+		}
+		rowsToUpdate = append(rowsToUpdate, item)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, item := range rowsToUpdate {
+		normalized, err := lyric.NormalizeContent(item.raw, item.ttml)
+		if err != nil {
+			continue
+		}
+		if _, err := r.db.ExecContext(ctx, `
+			UPDATE lyric_sources
+			SET ttml_lyric = ?, available = ?, has_translation = ?, has_transliteration = ?
+			WHERE id = ?
+		`, normalized.TTML, boolInt(normalized.Available), boolInt(normalized.HasTranslation), boolInt(normalized.HasTransliteration), item.id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (r *Repository) normalizeSongKeys(ctx context.Context) error {

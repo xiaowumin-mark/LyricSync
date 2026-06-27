@@ -24,10 +24,11 @@ import (
 type Service struct {
 	store    *state.Store
 	spectrum *spectrumProcessor
+	timeline *timelineClock
 }
 
 func New(store *state.Store) *Service {
-	return &Service{store: store, spectrum: newSpectrumProcessor()}
+	return &Service{store: store, spectrum: newSpectrumProcessor(), timeline: newTimelineClock()}
 }
 
 func (s *Service) Start(ctx context.Context) {
@@ -96,6 +97,7 @@ func (s *Service) startSMTC(ctx context.Context) error {
 	s.store.AddLog("Native SMTC monitor started")
 	s.publishSessions(m)
 	s.publishCurrent(m)
+	s.startTimelineTicker(ctx)
 
 	go func() {
 		defer func() {
@@ -133,33 +135,56 @@ func (s *Service) startSMTC(ctx context.Context) error {
 }
 
 func (s *Service) publishSessions(m *monitor.Monitor) {
-	sessions := m.Sessions()
+	sessions := stableSessionInfos(m.Sessions())
 	currentID := ""
 	if current := chooseSession(sessions, s.preferredCurrentID(m), s.store.Config().Media); current != nil {
 		currentID = current.SessionID
 	}
 
+	now := time.Now()
 	result := make([]model.Session, 0, len(sessions))
 	for _, session := range sessions {
-		result = append(result, sessionFromInfo(session, session.SessionID == currentID))
+		result = append(result, s.timeline.Session(session, session.SessionID == currentID, now))
 	}
+	s.timeline.Prune(sessions)
 	s.store.SetSessions(result)
 }
 
 func (s *Service) publishCurrent(m *monitor.Monitor) {
 	cfg := s.store.Config().Media
-	current := chooseSession(m.Sessions(), s.preferredCurrentID(m), cfg)
+	current := chooseSession(stableSessionInfos(m.Sessions()), s.preferredCurrentID(m), cfg)
 	if current == nil {
 		title := "Waiting for playback"
 		if cfg.SelectedSessionID != "" {
 			title = "Waiting for selected SMTC session"
 		}
+		s.timeline.ClearActive()
 		s.store.SetTrack(idleTrack(title))
 		s.store.SetPlayback(model.Playback{State: "stopped", Volume: -1, UpdatedAt: model.Now()})
 		return
 	}
+	now := time.Now()
 	s.store.SetTrack(trackFromSession(*current))
-	s.store.SetPlayback(playbackFromSession(*current))
+	s.store.SetPlayback(s.timeline.Playback(*current, now))
+}
+
+func (s *Service) startTimelineTicker(ctx context.Context) {
+	go func() {
+		ticker := time.NewTicker(timelineFrameInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case now := <-ticker.C:
+				position, ok := s.timeline.ActivePosition(now)
+				if !ok {
+					continue
+				}
+				s.store.SetPlaybackProgress(position, model.FormatTime(now))
+			}
+		}
+	}()
 }
 
 func (s *Service) preferredCurrentID(m *monitor.Monitor) string {
@@ -180,14 +205,7 @@ func idleTrack(title string) model.Track {
 }
 
 func sessionFromInfo(session smtcsuite.SessionInfo, active bool) model.Session {
-	position := session.TimelineInfo.Position.Milliseconds()
-	if position < 0 {
-		position = 0
-	}
-	duration := session.TimelineInfo.EndTime.Milliseconds()
-	if duration < 0 {
-		duration = 0
-	}
+	position, duration := normalizedTimeline(session.TimelineInfo)
 	return model.Session{
 		ID:        session.SessionID,
 		Name:      sessionName(session),
@@ -219,10 +237,7 @@ func trackFromSession(session smtcsuite.SessionInfo) model.Track {
 	if artist == "" {
 		artist = session.MediaInfo.AlbumArtist
 	}
-	duration := session.TimelineInfo.EndTime.Milliseconds()
-	if duration < 0 {
-		duration = 0
-	}
+	_, duration := normalizedTimeline(session.TimelineInfo)
 	track := model.Track{
 		ID:        session.SessionID,
 		Title:     title,
@@ -258,10 +273,7 @@ func detectCoverMimeType(data []byte) string {
 }
 
 func playbackFromSession(session smtcsuite.SessionInfo) model.Playback {
-	position := session.TimelineInfo.Position.Milliseconds()
-	if position < 0 {
-		position = 0
-	}
+	position, _ := normalizedTimeline(session.TimelineInfo)
 	return model.Playback{
 		State:      playbackState(session.PlaybackStatus),
 		Position:   position,
@@ -323,6 +335,7 @@ func chooseSession(sessions []smtcsuite.SessionInfo, currentID string, cfg model
 	if len(allowed) == 0 {
 		return nil
 	}
+	sortSessionInfos(allowed)
 	if cfg.SelectedSessionID != "" {
 		return findSessionByID(allowed, cfg.SelectedSessionID)
 	}
@@ -346,8 +359,28 @@ func chooseSession(sessions []smtcsuite.SessionInfo, currentID string, cfg model
 	if selected := findSessionByID(allowed, currentID); selected != nil {
 		return selected
 	}
-	sort.SliceStable(allowed, func(i, j int) bool { return sessionName(allowed[i]) < sessionName(allowed[j]) })
 	return &allowed[0]
+}
+
+func stableSessionInfos(sessions []smtcsuite.SessionInfo) []smtcsuite.SessionInfo {
+	result := append([]smtcsuite.SessionInfo(nil), sessions...)
+	sortSessionInfos(result)
+	return result
+}
+
+func sortSessionInfos(sessions []smtcsuite.SessionInfo) {
+	sort.SliceStable(sessions, func(i, j int) bool {
+		return sessionStableKey(sessions[i]) < sessionStableKey(sessions[j])
+	})
+}
+
+func sessionStableKey(session smtcsuite.SessionInfo) string {
+	appID := strings.ToLower(strings.TrimSpace(session.SourceAppUserModelID))
+	sessionID := strings.ToLower(strings.TrimSpace(session.SessionID))
+	if appID == "" {
+		appID = sessionID
+	}
+	return appID + "\x00" + sessionID
 }
 
 func sessionAllowed(session smtcsuite.SessionInfo, cfg model.MediaConfig) bool {

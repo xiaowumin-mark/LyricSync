@@ -12,6 +12,7 @@ import (
 	flux "github.com/xiaowumin-mark/FluxUI/ui"
 
 	"github.com/xiaowumin-mark/LyricSync/internal/app"
+	"github.com/xiaowumin-mark/LyricSync/internal/lyric"
 	"github.com/xiaowumin-mark/LyricSync/internal/model"
 	"github.com/xiaowumin-mark/LyricSync/internal/song"
 	storepkg "github.com/xiaowumin-mark/LyricSync/internal/state"
@@ -1023,7 +1024,7 @@ func songFormFromSong(item song.Song, lyrics []song.LyricSource) songForm {
 		Duration: formatDurationInput(item.DurationMs),
 	}
 	for _, lyric := range lyrics {
-		value := lyricContent(lyric)
+		value := lyricEditContent(lyric)
 		switch lyric.Source {
 		case song.SourceTTMLDB:
 			form.LyricTTMLDB = value
@@ -1082,27 +1083,29 @@ func lyricContent(lyric song.LyricSource) string {
 	return lyric.RawLyric
 }
 
+func lyricEditContent(lyric song.LyricSource) string {
+	if strings.TrimSpace(lyric.RawLyric) != "" {
+		return lyric.RawLyric
+	}
+	return lyric.TTMLLyric
+}
+
 func lyricPreviewText(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return "暂无歌词"
 	}
-	lines := strings.Split(value, "\n")
-	out := make([]string, 0, 8)
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" || line == "//" {
-			continue
-		}
-		out = append(out, line)
-		if len(out) >= 8 {
-			break
+	document, err := lyric.Parse(value)
+	if err == nil {
+		if preview := lyric.PreviewText(document, 8); strings.TrimSpace(preview) != "" {
+			return preview
 		}
 	}
-	if len(out) == 0 {
-		return "暂无可预览内容"
+	document = lyric.ParsePlainText(value)
+	if preview := lyric.PreviewText(document, 8); strings.TrimSpace(preview) != "" {
+		return preview
 	}
-	return strings.Join(out, "\n")
+	return "暂无可预览内容"
 }
 
 func songArtistAlbum(item song.Song) string {

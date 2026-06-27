@@ -128,12 +128,29 @@ type AMLLConnection struct {
 	BytesSent          uint64 `json:"bytesSent"`
 }
 
+type CurrentLyricLine struct {
+	StartTimeMs int64  `json:"startTimeMs"`
+	EndTimeMs   int64  `json:"endTimeMs"`
+	Text        string `json:"text"`
+	Translation string `json:"translation,omitempty"`
+	Roman       string `json:"roman,omitempty"`
+}
+
+type CurrentLyrics struct {
+	TrackID   string             `json:"trackId"`
+	Source    string             `json:"source,omitempty"`
+	Lines     []CurrentLyricLine `json:"lines"`
+	TTML      string             `json:"-"`
+	UpdatedAt string             `json:"updatedAt,omitempty"`
+}
+
 type Snapshot struct {
 	Version   string         `json:"version"`
 	Config    Config         `json:"config"`
 	Track     Track          `json:"track"`
 	Playback  Playback       `json:"playback"`
 	Audio     AudioFrame     `json:"audio"`
+	Lyrics    CurrentLyrics  `json:"lyrics"`
 	Sessions  []Session      `json:"sessions"`
 	AMLL      AMLLConnection `json:"amll"`
 	Logs      []string       `json:"logs"`

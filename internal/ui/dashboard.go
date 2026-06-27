@@ -213,11 +213,31 @@ func volumeDecoration(colors palette, volume float64) flux.Element {
 }
 
 func currentLyricPanel(colors palette, snapshot model.Snapshot) flux.Element {
-	text := "暂无歌词"
 	if isIdleTrack(snapshot.Track) {
-		text = "等待播放"
-	} else if strings.EqualFold(snapshot.Playback.State, "paused") {
-		text = "暂无歌词"
+		return lyricBox(colors, "等待播放", "", "")
+	}
+	line, ok := currentSnapshotLyric(snapshot)
+	if !ok {
+		return lyricBox(colors, "暂无歌词", "", "")
+	}
+	return lyricBox(colors, line.Text, line.Translation, line.Roman)
+}
+
+func lyricBox(colors palette, text, translation, roman string) flux.Element {
+	children := []flux.Element{
+		flux.TextElement(text, flux.TextSize(18), flux.TextColor(colors.text), flux.TextAlign(flux.AlignCenter)),
+	}
+	if strings.TrimSpace(translation) != "" {
+		children = append(children,
+			flux.VSpacerElement(8),
+			flux.TextElement(translation, flux.TextSize(13), flux.TextColor(colors.subtle), flux.TextAlign(flux.AlignCenter)),
+		)
+	}
+	if strings.TrimSpace(roman) != "" {
+		children = append(children,
+			flux.VSpacerElement(6),
+			flux.TextElement(roman, flux.TextSize(12), flux.TextColor(colors.subtle), flux.TextAlign(flux.AlignCenter)),
+		)
 	}
 	return panel(colors,
 		sectionTitle(colors, "当前歌词"),
@@ -226,10 +246,31 @@ func currentLyricPanel(colors palette, snapshot model.Snapshot) flux.Element {
 			128,
 			flux.ContainerDecorationElement(
 				flux.Bg(colors.muted).WithPad(flux.All(14)).WithRad(8),
-				flux.CenterElement(flux.TextElement(text, flux.TextSize(18), flux.TextColor(colors.subtle), flux.TextAlign(flux.AlignCenter))),
+				flux.CenterElement(flux.ColumnElement(children...)),
 			),
 		),
 	)
+}
+
+func currentSnapshotLyric(snapshot model.Snapshot) (model.CurrentLyricLine, bool) {
+	if snapshot.Lyrics.TrackID != "" && snapshot.Lyrics.TrackID != snapshot.Track.ID {
+		return model.CurrentLyricLine{}, false
+	}
+	if len(snapshot.Lyrics.Lines) == 0 {
+		return model.CurrentLyricLine{}, false
+	}
+	position := snapshot.Playback.Position
+	for _, line := range snapshot.Lyrics.Lines {
+		if position >= line.StartTimeMs && (line.EndTimeMs <= line.StartTimeMs || position < line.EndTimeMs) {
+			return line, true
+		}
+	}
+	for i := len(snapshot.Lyrics.Lines) - 1; i >= 0; i-- {
+		if position >= snapshot.Lyrics.Lines[i].StartTimeMs {
+			return snapshot.Lyrics.Lines[i], true
+		}
+	}
+	return snapshot.Lyrics.Lines[0], true
 }
 
 func useStableWaveform(ctx *flux.Context, values []float64, count int) []float64 {

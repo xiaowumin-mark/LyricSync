@@ -5,6 +5,7 @@ import (
 	"math"
 	"strings"
 
+	"github.com/xiaowumin-mark/LyricSync/internal/lyric"
 	"github.com/xiaowumin-mark/LyricSync/internal/model"
 )
 
@@ -52,6 +53,12 @@ type VolumeUpdate struct {
 	Volume float64 `json:"volume"`
 }
 
+type LyricTTMLUpdate struct {
+	Update string `json:"update"`
+	Format string `json:"format"`
+	Data   string `json:"data"`
+}
+
 func Initialize() Message {
 	return Message{Type: "initialize"}
 }
@@ -69,6 +76,10 @@ func SnapshotMessages(snapshot model.Snapshot) []Message {
 		SetMusic(snapshot.Track),
 		Progress(snapshot.Playback),
 		Volume(snapshot.Playback),
+	}
+	if strings.TrimSpace(snapshot.Lyrics.TTML) != "" &&
+		(snapshot.Lyrics.TrackID == "" || snapshot.Lyrics.TrackID == snapshot.Track.ID) {
+		messages = append(messages, SetLyricTTML(snapshot.Lyrics.TTML))
 	}
 	switch snapshot.Playback.State {
 	case "playing":
@@ -95,6 +106,10 @@ func EventMessages(event model.Event) []Message {
 				messages = append(messages, stateMessage(StateUpdate{Update: "paused"}))
 			}
 			return messages
+		}
+	case "lyrics_changed":
+		if lyrics, ok := event.Payload.(model.CurrentLyrics); ok && strings.TrimSpace(lyrics.TTML) != "" {
+			return []Message{SetLyricTTML(lyrics.TTML)}
 		}
 	}
 	return nil
@@ -132,6 +147,18 @@ func Volume(playback model.Playback) Message {
 	})
 }
 
+func SetLyricTTML(ttmlText string) Message {
+	return stateMessage(LyricTTMLUpdate{
+		Update: "setLyric",
+		Format: "ttml",
+		Data:   ttmlText,
+	})
+}
+
+func SetLyricDocument(document lyric.Document) Message {
+	return SetLyricTTML(lyric.GenerateTTML(document, false))
+}
+
 func BinaryAudioData(frame model.AudioFrame) ([]byte, bool) {
 	pcm := pcmAsS16LE(frame)
 	return binaryData(binaryMagicAudioData, pcm)
@@ -151,6 +178,8 @@ func MessageType(message Message) string {
 	case ProgressUpdate:
 		return "state:" + value.Update
 	case VolumeUpdate:
+		return "state:" + value.Update
+	case LyricTTMLUpdate:
 		return "state:" + value.Update
 	case StateUpdate:
 		return "state:" + value.Update

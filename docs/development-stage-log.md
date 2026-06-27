@@ -31,7 +31,7 @@
 | 3 | 仪表盘播放体验 | 已完成 | 2026-06-26 | 本文档 |
 | 4 | 配置、日志与基础持久化 | 已完成 | 2026-06-26 | 本文档 |
 | 5 | 歌曲数据库与播放记录 | 已完成 | 2026-06-27 | 本文档 |
-| 6 | 统一歌词结构与 TTML 能力 | 未开始 | - | - |
+| 6 | 统一歌词结构与 TTML 能力 | 已完成 | 2026-06-27 | 本文档 |
 | 7 | 歌词来源接入与并行搜索 | 未开始 | - | - |
 | 8 | 歌词任务调度与防堆积 | 未开始 | - | - |
 | 9 | AI 处理能力 | 未开始 | - | - |
@@ -741,6 +741,117 @@ go test ./...
 
 - 旧数据库重复行会在下次启动打开数据库时自动合并；已经运行中的旧数据需要重启后生效。
 - 还未做真实窗口截图回归，当前通过单元测试和编译验证。
+
+## 阶段 6：统一歌词结构与 TTML 能力
+
+完成日期：2026-06-27
+
+状态：已完成。
+
+### 本阶段目标
+
+- 建立统一歌词模型，让不同平台歌词都能进入同一处理链路。
+- 支持 TTML 解析、生成和压缩。
+- 支持逐行歌词提取，用于歌曲预览和仪表盘当前歌词展示。
+- 定义歌词可用性判断、翻译、音译和逐词时间轴字段。
+
+### 已完成内容
+
+- 新增 `internal/lyric` 领域模块：
+  - `Document`、`Line`、`Word`、`Metadata` 统一歌词模型。
+  - `TranslatedLyric`、`RomanLyric`、`Word.RomanText` 字段。
+  - `IsBackground`、`IsDuet`、`IgnoreSync` 等 TTML 可表达行属性。
+  - 逐词 `StartTimeMs` / `EndTimeMs` 时间轴。
+- 参考 `/ref/amll-ttml` 的结构能力，实现项目内独立 TTML 处理：
+  - `ParseTTML`
+  - `GenerateTTML`
+  - `CompressTTML`
+  - `ParseTimestamp` / `FormatTimestamp`
+- 增加 LRC/普通文本入口：
+  - LRC 可转换为统一逐行结构。
+  - 普通文本可用于预览，但因没有时间轴不会被判定为可直接同步歌词。
+- 定义歌词可用性判断：
+  - 至少存在原文歌词行。
+  - 至少存在可解析时间轴。
+  - 转换为统一结构后没有解析错误。
+- 歌词缓存写入接入统一结构：
+  - `song.Repository.SetLyric` 保存歌词时会自动生成紧凑 TTML。
+  - 自动维护 `available`、`has_translation`、`has_transliteration`。
+  - 数据库打开迁移时会尝试补齐旧歌词缓存的 TTML 和可用性标记。
+- 歌曲页歌词预览改为读取统一结构：
+  - 不再直接把平台原始歌词文本按行展示。
+  - LRC 预览会隐藏时间戳，只显示用户可读原文、翻译、音译。
+  - QQ 翻译占位 `//` 会被清理为空翻译。
+- 仪表盘当前歌词接入运行时状态：
+  - `state.Snapshot` 新增轻量当前歌词行。
+  - active 歌曲命中本地歌词缓存时发布逐行歌词。
+  - idle 或不可记录歌曲会清空当前歌词，避免显示上一首内容。
+- AMLL 歌词发送出口接入统一结构：
+  - 新增 `setLyric` + `format:"ttml"` 消息。
+  - `lyrics_changed` 事件可触发歌词发送。
+  - `SendSnapshot` 会携带当前已加载的 TTML 歌词，避免先加载歌词、后连接 AMLL 时漏发。
+
+### 交付物
+
+- 统一歌词模型与 TTML 能力：
+  - `internal/lyric`
+- 歌词缓存规范化：
+  - `internal/song/repository.go`
+- 当前歌词运行时状态：
+  - `internal/model/model.go`
+  - `internal/state/state.go`
+  - `internal/app/app.go`
+- AMLL 歌词消息出口：
+  - `internal/amll/protocol.go`
+  - `internal/amll/connector.go`
+- UI 预览和仪表盘当前歌词：
+  - `internal/ui/songs.go`
+  - `internal/ui/dashboard.go`
+- 测试：
+  - `internal/lyric/lyric_test.go`
+  - `internal/song/repository_test.go`
+  - `internal/amll/protocol_test.go`
+  - `internal/ui/songs_test.go`
+
+### 验证方式
+
+执行：
+
+```powershell
+go test ./...
+```
+
+结果：
+
+```text
+通过
+```
+
+### 关键决策
+
+- `/ref/amll-ttml` 只作为结构和行为参考，不直接 import 参考仓库代码。
+- 数据库仍保存原始歌词和统一后的 TTML 两份数据：原始歌词便于后续排查和重新清洗，TTML 作为统一处理链路与 AMLL 输出格式。
+- UI 预览和仪表盘只消费统一结构导出的逐行歌词，不依赖 QQ、网易、酷狗或 TTML DB 的原始结构。
+- 普通文本可预览但不判定为可同步歌词，避免没有时间轴的歌词被误发给 AMLL。
+- AMLL 当前阶段优先发送 TTML 格式歌词；结构化 `lines` 输出可在完整同步阶段按需补齐。
+
+### 遗留问题
+
+- 当前 TTML 解析覆盖主流 `p/span`、翻译、音译和背景行场景，复杂 iTunes metadata 翻译/逐词音译映射后续接入 TTML DB 大样本时继续增强。
+- 多平台原始歌词结构转换尚未实现，将在阶段 7 接入 QQ、网易、酷狗、TTML DB 搜索时补齐。
+- AI 清洗、翻译、音译和任务取消策略尚未接入，将在阶段 8 到阶段 9 完成。
+
+### 下一阶段入口
+
+进入阶段 7：歌词来源接入与并行搜索。
+
+阶段 7 首要任务：
+
+- 接入 TTML DB 索引和歌词获取。
+- 接入 AMLX-MUSIC-API 的 QQ、网易、酷狗歌词搜索。
+- 将各平台结果先转换为 `internal/lyric.Document`。
+- 按用户设置的搜词优先级选择第一份可用歌词。
+- 将四个平台结果写入当前 `lyric_sources` 缓存结构。
 
 ## 后续阶段记录模板
 

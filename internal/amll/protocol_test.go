@@ -60,3 +60,34 @@ func TestBinaryCoverDataSkipsEmptyCover(t *testing.T) {
 		t.Fatalf("expected empty cover to be skipped, got %#v", data)
 	}
 }
+
+func TestSetLyricTTMLJSONMatchesAMLLV2Shape(t *testing.T) {
+	data, err := json.Marshal(SetLyricTTML("<tt></tt>"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"type":"state","value":{"update":"setLyric","format":"ttml","data":"\u003ctt\u003e\u003c/tt\u003e"}}`
+	if string(data) != want {
+		t.Fatalf("unexpected JSON:\n%s\nwant:\n%s", data, want)
+	}
+}
+
+func TestSnapshotMessagesIncludeCurrentLyric(t *testing.T) {
+	messages := SnapshotMessages(model.Snapshot{
+		Track: model.Track{ID: "track-1"},
+		Lyrics: model.CurrentLyrics{
+			TrackID: "track-1",
+			TTML:    "<tt></tt>",
+		},
+	})
+	found := false
+	for _, message := range messages {
+		if MessageType(message) == "state:setLyric" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected snapshot messages to include setLyric, got %#v", messages)
+	}
+}

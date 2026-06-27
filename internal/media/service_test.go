@@ -75,6 +75,90 @@ func TestChooseSessionAppliesWhitelistAndBlacklist(t *testing.T) {
 	}
 }
 
+func TestStableSessionInfosOrdersByIdentity(t *testing.T) {
+	sessions := []smtcsuite.SessionInfo{
+		{SessionID: "z-session", SourceAppUserModelID: "ZPlayer.exe", MediaInfo: smtcsuite.MediaInfo{Title: "A"}},
+		{SessionID: "a-session", SourceAppUserModelID: "APlayer.exe", MediaInfo: smtcsuite.MediaInfo{Title: "Z"}},
+	}
+	sorted := stableSessionInfos(sessions)
+	if sorted[0].SessionID != "a-session" || sorted[1].SessionID != "z-session" {
+		t.Fatalf("expected stable app identity ordering, got %#v", sorted)
+	}
+
+	sessions[0], sessions[1] = sessions[1], sessions[0]
+	resorted := stableSessionInfos(sessions)
+	if resorted[0].SessionID != "a-session" || resorted[1].SessionID != "z-session" {
+		t.Fatalf("expected input order not to affect output, got %#v", resorted)
+	}
+}
+
+func TestTimelineClockInfersBetweenSlowSecondUpdates(t *testing.T) {
+	clock := newTimelineClock()
+	base := time.Unix(100, 0)
+	session := smtcsuite.SessionInfo{
+		SessionID:      "music",
+		PlaybackStatus: smtcsuite.PlaybackStatusPlaying,
+		TimelineInfo: smtcsuite.TimelineInfo{
+			Position: 45 * time.Second,
+			EndTime:  3 * time.Minute,
+		},
+	}
+	first := clock.Playback(session, base)
+	if first.Position != 45000 {
+		t.Fatalf("expected initial position 45000, got %d", first.Position)
+	}
+
+	second := clock.Playback(session, base.Add(750*time.Millisecond))
+	if second.Position < 45740 || second.Position > 45760 {
+		t.Fatalf("expected inferred sub-second position near 45750, got %d", second.Position)
+	}
+
+	session.TimelineInfo.Position = 46 * time.Second
+	third := clock.Playback(session, base.Add(time.Second))
+	if third.Position < 45990 || third.Position > 46010 {
+		t.Fatalf("expected exact second boundary not to overshoot, got %d", third.Position)
+	}
+}
+
+func TestTimelineClockNormalizesSecondUnitDurations(t *testing.T) {
+	clock := newTimelineClock()
+	session := smtcsuite.SessionInfo{
+		SessionID:      "music",
+		PlaybackStatus: smtcsuite.PlaybackStatusPaused,
+		TimelineInfo: smtcsuite.TimelineInfo{
+			Position: time.Duration(45),
+			EndTime:  time.Duration(180),
+		},
+	}
+	playback := clock.Playback(session, time.Unix(100, 0))
+	if playback.Position != 45000 {
+		t.Fatalf("expected raw second position to normalize to 45000ms, got %d", playback.Position)
+	}
+	_, duration := normalizedTimeline(session.TimelineInfo)
+	if duration != 180000 {
+		t.Fatalf("expected raw second duration to normalize to 180000ms, got %d", duration)
+	}
+}
+
+func TestTimelineClockReanchorsOnSeek(t *testing.T) {
+	clock := newTimelineClock()
+	base := time.Unix(100, 0)
+	session := smtcsuite.SessionInfo{
+		SessionID:      "music",
+		PlaybackStatus: smtcsuite.PlaybackStatusPlaying,
+		TimelineInfo: smtcsuite.TimelineInfo{
+			Position: 90 * time.Second,
+			EndTime:  3 * time.Minute,
+		},
+	}
+	_ = clock.Playback(session, base)
+	session.TimelineInfo.Position = 30 * time.Second
+	playback := clock.Playback(session, base.Add(2*time.Second))
+	if playback.Position != 30000 {
+		t.Fatalf("expected seek to re-anchor at 30000ms, got %d", playback.Position)
+	}
+}
+
 func TestTrackFromSessionCopiesThumbnail(t *testing.T) {
 	thumbnail := []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}
 	track := trackFromSession(smtcsuite.SessionInfo{

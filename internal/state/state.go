@@ -16,6 +16,7 @@ type Store struct {
 	track       model.Track
 	playback    model.Playback
 	audio       model.AudioFrame
+	lyrics      model.CurrentLyrics
 	sessions    []model.Session
 	amll        model.AMLLConnection
 	logs        []string
@@ -56,6 +57,7 @@ func (s *Store) Snapshot() model.Snapshot {
 		Track:     cloneTrack(s.track),
 		Playback:  s.playback,
 		Audio:     s.audio,
+		Lyrics:    cloneLyrics(s.lyrics),
 		Sessions:  append([]model.Session(nil), s.sessions...),
 		AMLL:      s.amll,
 		Logs:      append([]string(nil), s.logs...),
@@ -102,10 +104,43 @@ func (s *Store) SetPlayback(playback model.Playback) {
 	s.mu.Unlock()
 }
 
+func (s *Store) Playback() model.Playback {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.playback
+}
+
+func (s *Store) SetPlaybackProgress(position int64, updatedAt string) {
+	if position < 0 {
+		position = 0
+	}
+	s.mu.Lock()
+	if s.playback.State != "playing" || s.playback.Position == position {
+		s.mu.Unlock()
+		return
+	}
+	if updatedAt == "" {
+		updatedAt = model.Now()
+	}
+	s.playback.Position = position
+	s.playback.UpdatedAt = updatedAt
+	playback := s.playback
+	s.publishLocked("playback_progress", playback)
+	s.mu.Unlock()
+}
+
 func (s *Store) SetAudio(frame model.AudioFrame) {
 	s.mu.Lock()
 	s.audio = frame
 	s.publishLocked("audio_frame", frame)
+	s.mu.Unlock()
+}
+
+func (s *Store) SetLyrics(lyrics model.CurrentLyrics) {
+	s.mu.Lock()
+	lyrics.Lines = append([]model.CurrentLyricLine(nil), lyrics.Lines...)
+	s.lyrics = lyrics
+	s.publishLocked("lyrics_changed", cloneLyrics(lyrics))
 	s.mu.Unlock()
 }
 
@@ -192,4 +227,9 @@ func trackEqual(a, b model.Track) bool {
 		a.CoverMimeType == b.CoverMimeType &&
 		a.CoverHash == b.CoverHash &&
 		bytes.Equal(a.CoverData, b.CoverData)
+}
+
+func cloneLyrics(lyrics model.CurrentLyrics) model.CurrentLyrics {
+	lyrics.Lines = append([]model.CurrentLyricLine(nil), lyrics.Lines...)
+	return lyrics
 }

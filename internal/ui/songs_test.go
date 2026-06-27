@@ -37,7 +37,7 @@ func TestParseDurationInput(t *testing.T) {
 
 func TestLyricPreviewTextSkipsEmptyAndPlaceholderTranslation(t *testing.T) {
 	got := lyricPreviewText("\n//\n[00:01.00]第一行\n[00:02.00]第二行\n")
-	want := "[00:01.00]第一行\n[00:02.00]第二行"
+	want := "第一行\n第二行"
 	if got != want {
 		t.Fatalf("preview = %q, want %q", got, want)
 	}

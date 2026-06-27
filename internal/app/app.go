@@ -7,6 +7,7 @@ import (
 
 	"github.com/xiaowumin-mark/LyricSync/internal/amll"
 	"github.com/xiaowumin-mark/LyricSync/internal/config"
+	"github.com/xiaowumin-mark/LyricSync/internal/lyric"
 	"github.com/xiaowumin-mark/LyricSync/internal/media"
 	"github.com/xiaowumin-mark/LyricSync/internal/model"
 	"github.com/xiaowumin-mark/LyricSync/internal/song"
@@ -200,6 +201,9 @@ func (r *Runtime) SetSongLyric(ctx context.Context, songID int64, source string,
 	if err := r.songs.SetLyric(ctx, songID, source, rawLyric, ttmlLyric); err != nil {
 		return err
 	}
+	if current, err := r.songs.Get(ctx, songID); err == nil && r.isCurrentSong(current) {
+		r.publishBestLyricForSong(ctx, current, r.store.Snapshot().Track)
+	}
 	r.store.Notify("songs_changed", songID)
 	return nil
 }
@@ -237,10 +241,12 @@ func (r *Runtime) startSongRecorder(ctx context.Context) {
 
 func (r *Runtime) recordTrackIfChanged(ctx context.Context, track model.Track, lastKey string) string {
 	if isIdleTrack(track) {
+		r.store.SetLyrics(model.CurrentLyrics{TrackID: track.ID, UpdatedAt: model.Now()})
 		return ""
 	}
 	input := song.InputFromTrack(track)
 	if !input.Recordable() {
+		r.store.SetLyrics(model.CurrentLyrics{TrackID: track.ID, UpdatedAt: model.Now()})
 		return lastKey
 	}
 	key := song.UniqueKey(input)
@@ -261,7 +267,93 @@ func (r *Runtime) recordTrackIfChanged(ctx context.Context, track model.Track, l
 		r.store.AddLog("Song play count updated: " + recorded.Title)
 	}
 	r.store.Notify("songs_changed", recorded.ID)
+	r.publishBestLyricForSong(ctx, recorded, track)
 	return key
+}
+
+func (r *Runtime) publishBestLyricForSong(ctx context.Context, item song.Song, track model.Track) {
+	if r.songs == nil || item.ID <= 0 {
+		r.store.SetLyrics(model.CurrentLyrics{TrackID: track.ID, UpdatedAt: model.Now()})
+		return
+	}
+	lyrics, err := r.songs.Lyrics(ctx, item.ID)
+	if err != nil {
+		r.store.AddLog("Lyric load failed: " + err.Error())
+		r.store.SetLyrics(model.CurrentLyrics{TrackID: track.ID, UpdatedAt: model.Now()})
+		return
+	}
+	selected, ok := selectBestLyric(lyrics, r.store.Config().Lyrics.SearchPriority)
+	if !ok {
+		r.store.SetLyrics(model.CurrentLyrics{TrackID: track.ID, UpdatedAt: model.Now()})
+		return
+	}
+	content := strings.TrimSpace(selected.TTMLLyric)
+	if content == "" {
+		content = strings.TrimSpace(selected.RawLyric)
+	}
+	document, err := lyric.Parse(content)
+	if err != nil || !lyric.IsUsable(document) {
+		r.store.SetLyrics(model.CurrentLyrics{TrackID: track.ID, UpdatedAt: model.Now()})
+		return
+	}
+	ttmlText := selected.TTMLLyric
+	if strings.TrimSpace(ttmlText) == "" {
+		ttmlText = lyric.GenerateTTML(document, false)
+	}
+	r.store.SetLyrics(model.CurrentLyrics{
+		TrackID:   track.ID,
+		Source:    selected.Source,
+		Lines:     currentLyricLines(document),
+		TTML:      ttmlText,
+		UpdatedAt: model.Now(),
+	})
+}
+
+func (r *Runtime) isCurrentSong(item song.Song) bool {
+	current := song.InputFromTrack(r.store.Snapshot().Track)
+	if !current.Recordable() {
+		return false
+	}
+	return song.UniqueKey(current) == item.UniqueKey
+}
+
+func selectBestLyric(lyrics []song.LyricSource, priority []string) (song.LyricSource, bool) {
+	bySource := map[string]song.LyricSource{}
+	for _, item := range lyrics {
+		if !item.Available {
+			continue
+		}
+		if strings.TrimSpace(item.TTMLLyric) == "" && strings.TrimSpace(item.RawLyric) == "" {
+			continue
+		}
+		bySource[item.Source] = item
+	}
+	for _, source := range priority {
+		if item, ok := bySource[source]; ok {
+			return item, true
+		}
+	}
+	for _, source := range song.LyricSources {
+		if item, ok := bySource[source]; ok {
+			return item, true
+		}
+	}
+	return song.LyricSource{}, false
+}
+
+func currentLyricLines(document lyric.Document) []model.CurrentLyricLine {
+	previews := lyric.PreviewLines(document, len(document.Lines))
+	out := make([]model.CurrentLyricLine, 0, len(previews))
+	for _, line := range previews {
+		out = append(out, model.CurrentLyricLine{
+			StartTimeMs: line.StartTimeMs,
+			EndTimeMs:   line.EndTimeMs,
+			Text:        line.Text,
+			Translation: line.Translation,
+			Roman:       line.Roman,
+		})
+	}
+	return out
 }
 
 func boolText(v bool) string {
