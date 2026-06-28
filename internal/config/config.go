@@ -31,6 +31,7 @@ func Default() model.Config {
 				model.LyricSourceQQ,
 				model.LyricSourceKugou,
 				model.LyricSourceNetease,
+				model.LyricSourceCustom,
 			},
 			CleanStrategy: model.LyricsCleanSoftware,
 		},
@@ -175,6 +176,7 @@ func normalizePriority(values []string, defaults []string) []string {
 		model.LyricSourceQQ:      {},
 		model.LyricSourceKugou:   {},
 		model.LyricSourceNetease: {},
+		model.LyricSourceCustom:  {},
 	}
 	seen := map[string]struct{}{}
 	out := make([]string, 0, len(defaults))

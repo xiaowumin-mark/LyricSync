@@ -99,11 +99,19 @@ func useStoreSnapshot(ctx *flux.Context, store *storepkg.Store) model.Snapshot {
 
 		snapshotState.Set(store.Snapshot())
 		go func() {
+			lastRealtimeUI := time.Time{}
 			for {
 				select {
-				case _, ok := <-events:
+				case event, ok := <-events:
 					if !ok {
 						return
+					}
+					if event.Type == "playback_progress" || event.Type == "audio_frame" {
+						now := time.Now()
+						if !lastRealtimeUI.IsZero() && now.Sub(lastRealtimeUI) < 100*time.Millisecond {
+							continue
+						}
+						lastRealtimeUI = now
 					}
 					snapshotState.Set(store.Snapshot())
 				case <-done:
@@ -176,6 +184,9 @@ func appRouter(
 		flux.RouteElement("/songs/:id/edit", func(routeCtx *flux.Context) flux.Element {
 			return songsPage(routeCtx, colors, snapshot, notice, store, runtime)
 		}, flux.RouteName("song-edit"), flux.RouteTitle("编辑歌曲")),
+		flux.RouteElement("/songs/:id/lyrics", func(routeCtx *flux.Context) flux.Element {
+			return songsPage(routeCtx, colors, snapshot, notice, store, runtime)
+		}, flux.RouteName("song-lyrics"), flux.RouteTitle("歌词")),
 		flux.RouteElement("/songs/:id", func(routeCtx *flux.Context) flux.Element {
 			return songsPage(routeCtx, colors, snapshot, notice, store, runtime)
 		}, flux.RouteName("song-detail"), flux.RouteTitle("歌曲详情")),

@@ -106,6 +106,96 @@ func TestRecordPlaybackDeduplicatesWhenDurationArrivesLater(t *testing.T) {
 	}
 }
 
+func TestRecordPlaybackDeduplicatesArtistAlbumCombinedMetadata(t *testing.T) {
+	repo := openTestRepo(t)
+	ctx := context.Background()
+
+	first, created, err := repo.RecordPlayback(ctx, Input{
+		Title:  "Song",
+		Artist: "Artist — Album",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !created {
+		t.Fatal("expected first playback to create a song")
+	}
+	if first.Artist != "Artist" || first.Album != "Album" {
+		t.Fatalf("expected combined artist field to be split before storing, got %#v", first)
+	}
+
+	second, created, err := repo.RecordPlayback(ctx, Input{
+		Title:  "Song",
+		Artist: "Artist",
+		Album:  "Album",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created || second.ID != first.ID || second.PlayCount != 2 {
+		t.Fatalf("expected normalized playback to hit same row, created=%v first=%#v second=%#v", created, first, second)
+	}
+
+	all, err := repo.Search(ctx, "Song", 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 1 {
+		t.Fatalf("expected one stored song, got %#v", all)
+	}
+}
+
+func TestGetByInputMatchesLegacyCombinedArtistKey(t *testing.T) {
+	repo := openTestRepo(t)
+	ctx := context.Background()
+	now := formatDBTime(time.Now().UTC())
+
+	_, err := repo.db.ExecContext(ctx, `
+		INSERT INTO songs (
+			unique_key, title, artist, album, duration_ms, first_played_at,
+			last_played_at, play_count, created_at, updated_at
+		) VALUES (?, 'Song', 'Artist — Album', '', 0, ?, ?, 1, ?, ?)
+	`, uniqueKeyWithoutMetadataSplit(Input{Title: "Song", Artist: "Artist — Album"}), now, now, now, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := repo.GetByInput(ctx, Input{Title: "Song", Artist: "Artist", Album: "Album"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Title != "Song" {
+		t.Fatalf("expected legacy row, got %#v", got)
+	}
+}
+
+func TestRecordPlaybackRejectsPlaceholderTrack(t *testing.T) {
+	repo := openTestRepo(t)
+	ctx := context.Background()
+
+	if _, _, err := repo.RecordPlayback(ctx, Input{Title: "Waiting for playback"}); err != ErrUnrecordable {
+		t.Fatalf("expected placeholder title to be unrecordable, got %v", err)
+	}
+	if _, _, err := repo.RecordPlayback(ctx, Input{Title: "Song Without Artist"}); err != ErrUnrecordable {
+		t.Fatalf("expected missing artist to be unrecordable, got %v", err)
+	}
+}
+
+func TestInputCleanSplitsCombinedMetadata(t *testing.T) {
+	got := Input{Title: "Artist — Song"}.Clean()
+	if got.Artist != "Artist" || got.Title != "Song" {
+		t.Fatalf("expected artist-title split, got %#v", got)
+	}
+	got = Input{Title: "Song", Artist: "Artist — Album"}.Clean()
+	if got.Artist != "Artist" || got.Album != "Album" {
+		t.Fatalf("expected artist-album split, got %#v", got)
+	}
+	got = Input{Title: "Song", Artist: "Artist - Album"}.Clean()
+	if got.Artist != "Artist - Album" || got.Album != "" {
+		t.Fatalf("plain hyphen should not split during primary clean, got %#v", got)
+	}
+}
+
 func TestNormalizeSongKeysMergesLegacyDurationDuplicates(t *testing.T) {
 	repo := openTestRepo(t)
 	ctx := context.Background()
@@ -134,6 +224,38 @@ func TestNormalizeSongKeysMergesLegacyDurationDuplicates(t *testing.T) {
 	}
 	if all[0].PlayCount != 3 || all[0].DurationMs != 323000 {
 		t.Fatalf("expected merged stats and duration, got %#v", all[0])
+	}
+}
+
+func TestNormalizeSongKeysMergesCombinedArtistDuplicates(t *testing.T) {
+	repo := openTestRepo(t)
+	ctx := context.Background()
+	now := formatDBTime(time.Now().UTC())
+
+	_, err := repo.db.ExecContext(ctx, `
+		INSERT INTO songs (
+			unique_key, title, artist, album, duration_ms, first_played_at,
+			last_played_at, play_count, created_at, updated_at
+		) VALUES
+			(?, 'Song', 'Artist — Album', '', 0, ?, ?, 1, ?, ?),
+			(?, 'Song', 'Artist', 'Album', 200000, ?, ?, 2, ?, ?)
+	`, uniqueKeyWithoutMetadataSplit(Input{Title: "Song", Artist: "Artist — Album"}), now, now, now, now,
+		UniqueKey(Input{Title: "Song", Artist: "Artist", Album: "Album"}), now, now, now, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.normalizeSongKeys(ctx); err != nil {
+		t.Fatal(err)
+	}
+	all, err := repo.Search(ctx, "Song", 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 1 {
+		t.Fatalf("expected duplicates to merge, got %#v", all)
+	}
+	if all[0].Artist != "Artist" || all[0].Album != "Album" || all[0].PlayCount != 3 {
+		t.Fatalf("expected merged normalized metadata, got %#v", all[0])
 	}
 }
 
@@ -210,6 +332,52 @@ func TestLyricsSlotsAndUpdate(t *testing.T) {
 	}
 	if _, err := lyric.ParseTTML(qq.TTMLLyric); err != nil {
 		t.Fatalf("generated TTML should parse: %v", err)
+	}
+}
+
+func TestSetLyricDelay(t *testing.T) {
+	repo := openTestRepo(t)
+	ctx := context.Background()
+
+	s, err := repo.Create(ctx, Input{Title: "Song", Artist: "Artist"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.SetLyricDelay(ctx, s.ID, SourceCustom, -240); err != nil {
+		t.Fatal(err)
+	}
+	lyrics, err := repo.Lyrics(ctx, s.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range lyrics {
+		if item.Source == SourceCustom {
+			if item.DelayMs != -240 {
+				t.Fatalf("delay = %d, want -240", item.DelayMs)
+			}
+			return
+		}
+	}
+	t.Fatal("custom lyric slot not found")
+}
+
+func TestFixedLyricSourceAndGetByInput(t *testing.T) {
+	repo := openTestRepo(t)
+	ctx := context.Background()
+
+	created, err := repo.Create(ctx, Input{Title: "Song", Artist: "Artist", FixedLyricSource: SourceCustom})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.FixedLyricSource != SourceCustom {
+		t.Fatalf("expected fixed source to persist, got %#v", created)
+	}
+	got, err := repo.GetByInput(ctx, Input{Title: "Song", Artist: "Artist"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != created.ID {
+		t.Fatalf("expected GetByInput to find created song, got %#v", got)
 	}
 }
 

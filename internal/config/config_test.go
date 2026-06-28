@@ -30,7 +30,7 @@ func TestMergeAppliesDefaultURL(t *testing.T) {
 
 func TestMergeAppliesFullSettingsDefaults(t *testing.T) {
 	got := merge(Default(), model.Config{})
-	if len(got.Lyrics.SearchPriority) != 4 {
+	if len(got.Lyrics.SearchPriority) != 5 {
 		t.Fatalf("expected full lyrics priority, got %#v", got.Lyrics.SearchPriority)
 	}
 	if got.Lyrics.SearchPriority[0] != model.LyricSourceTTMLDB {
@@ -80,6 +80,7 @@ func TestMergeNormalizesLyricPriority(t *testing.T) {
 		model.LyricSourceNetease,
 		model.LyricSourceTTMLDB,
 		model.LyricSourceKugou,
+		model.LyricSourceCustom,
 	}
 	for i := range want {
 		if got.Lyrics.SearchPriority[i] != want[i] {

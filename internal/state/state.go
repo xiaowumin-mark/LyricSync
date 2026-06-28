@@ -20,6 +20,7 @@ type Store struct {
 	sessions    []model.Session
 	amll        model.AMLLConnection
 	logs        []string
+	updatedAt   string
 	subscribers map[chan model.Event]struct{}
 }
 
@@ -44,6 +45,7 @@ func New(cfg model.Config) *Store {
 			Message: "not connected",
 		},
 		logs:        []string{now + " LyricSync started"},
+		updatedAt:   now,
 		subscribers: map[chan model.Event]struct{}{},
 	}
 }
@@ -54,14 +56,14 @@ func (s *Store) Snapshot() model.Snapshot {
 	return model.Snapshot{
 		Version:   model.Version,
 		Config:    s.config,
-		Track:     cloneTrack(s.track),
+		Track:     s.track,
 		Playback:  s.playback,
 		Audio:     s.audio,
-		Lyrics:    cloneLyrics(s.lyrics),
+		Lyrics:    s.lyrics,
 		Sessions:  append([]model.Session(nil), s.sessions...),
 		AMLL:      s.amll,
 		Logs:      append([]string(nil), s.logs...),
-		UpdatedAt: model.Now(),
+		UpdatedAt: s.updatedAt,
 	}
 }
 
@@ -87,7 +89,7 @@ func (s *Store) SetTrack(track model.Track) {
 		return
 	}
 	s.track = track
-	s.publishLocked("track_changed", cloneTrack(track))
+	s.publishLocked("track_changed", track)
 	s.mu.Unlock()
 }
 
@@ -108,6 +110,12 @@ func (s *Store) Playback() model.Playback {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.playback
+}
+
+func (s *Store) LyricDelayMs() int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.lyrics.DelayMs
 }
 
 func (s *Store) SetPlaybackProgress(position int64, updatedAt string) {
@@ -132,7 +140,9 @@ func (s *Store) SetPlaybackProgress(position int64, updatedAt string) {
 func (s *Store) SetAudio(frame model.AudioFrame) {
 	s.mu.Lock()
 	s.audio = frame
-	s.publishLocked("audio_frame", frame)
+	eventFrame := frame
+	eventFrame.PCM = nil
+	s.publishLocked("audio_frame", eventFrame)
 	s.mu.Unlock()
 }
 
@@ -203,7 +213,9 @@ func (s *Store) Subscribe(buffer int) (<-chan model.Event, func()) {
 }
 
 func (s *Store) publishLocked(eventType string, payload any) {
-	event := model.Event{Type: eventType, Payload: payload, Time: model.Now()}
+	now := model.Now()
+	s.updatedAt = now
+	event := model.Event{Type: eventType, Payload: payload, Time: now}
 	for ch := range s.subscribers {
 		select {
 		case ch <- event:
@@ -230,6 +242,5 @@ func trackEqual(a, b model.Track) bool {
 }
 
 func cloneLyrics(lyrics model.CurrentLyrics) model.CurrentLyrics {
-	lyrics.Lines = append([]model.CurrentLyricLine(nil), lyrics.Lines...)
 	return lyrics
 }

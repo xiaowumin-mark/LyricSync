@@ -18,6 +18,9 @@ func Parse(input string) (Document, error) {
 	if looksLikeTTML(input) {
 		return ParseTTML(input)
 	}
+	if doc, ok, err := parsePlatformRaw(input); ok || err != nil {
+		return doc, err
+	}
 	if lrcTimeTagPattern.MatchString(input) {
 		return ParseLRC(input)
 	}

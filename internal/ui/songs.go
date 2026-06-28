@@ -2,10 +2,13 @@ package ui
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/xiaowumin-mark/FluxUI/router"
@@ -26,18 +29,41 @@ const (
 	songViewDetail songView = "detail"
 	songViewCreate songView = "create"
 	songViewEdit   songView = "edit"
+	songViewLyrics songView = "lyrics"
 )
 
 type songForm struct {
-	ID           int64
-	Title        string
-	Artist       string
-	Album        string
-	Duration     string
-	LyricTTMLDB  string
-	LyricQQ      string
-	LyricKugou   string
-	LyricNetease string
+	ID                int64
+	Title             string
+	Artist            string
+	Album             string
+	Duration          string
+	FixedLyricSource  string
+	LyricTTMLDB       string
+	LyricQQ           string
+	LyricKugou        string
+	LyricNetease      string
+	LyricCustomTTML   string
+	LyricTTMLDBDelay  string
+	LyricQQDelay      string
+	LyricKugouDelay   string
+	LyricNeteaseDelay string
+	LyricCustomDelay  string
+	LyricsPreviewFrom string
+}
+
+const lyricDocumentCacheMax = 32
+
+type cachedLyricDocument struct {
+	Document lyric.Document
+	Err      error
+}
+
+var lyricDocumentCache = struct {
+	sync.Mutex
+	values map[string]cachedLyricDocument
+}{
+	values: map[string]cachedLyricDocument{},
 }
 
 type songViewState interface {
@@ -192,7 +218,7 @@ func songsPage(
 			}
 			var selectedSong song.Song
 			var selectedLyrics []song.LyricSource
-			if currentSelectedID > 0 && (currentView == songViewDetail || currentView == songViewEdit) {
+			if currentSelectedID > 0 && (currentView == songViewDetail || currentView == songViewEdit || currentView == songViewLyrics) {
 				selectedSong, err = runtime.GetSong(loadCtx, currentSelectedID)
 				if err != nil && !errors.Is(err, song.ErrNotFound) {
 					if loadCtx.Err() == nil {
@@ -250,6 +276,7 @@ func songsPage(
 		allSongs.Value(),
 		selected.Value(),
 		lyrics.Value(),
+		params.Query("source"),
 		notice,
 		runtime,
 	)
@@ -269,6 +296,8 @@ func songViewFromRoute(name string) songView {
 		return songViewDetail
 	case "song-edit":
 		return songViewEdit
+	case "song-lyrics":
+		return songViewLyrics
 	default:
 		return songViewRecent
 	}
@@ -296,6 +325,11 @@ func songRoutePath(view songView, selectedID int64) string {
 	case songViewEdit:
 		if selectedID > 0 {
 			return fmt.Sprintf("/songs/%d/edit?rev=%d", selectedID, time.Now().UnixNano())
+		}
+		return "/songs/all"
+	case songViewLyrics:
+		if selectedID > 0 {
+			return fmt.Sprintf("/songs/%d/lyrics", selectedID)
 		}
 		return "/songs/all"
 	default:
@@ -330,6 +364,7 @@ func songsPageContent(
 	allSongs []song.Song,
 	selected song.Song,
 	lyrics []song.LyricSource,
+	lyricSource string,
 	notice stringState,
 	runtime *app.Runtime,
 ) flux.Element {
@@ -342,6 +377,8 @@ func songsPageContent(
 		return songFormView(colors, "新增歌曲", true, form, view, selectedID, reload, notice, runtime)
 	case songViewEdit:
 		return songFormView(colors, "编辑歌曲", false, form, view, selectedID, reload, notice, runtime)
+	case songViewLyrics:
+		return songLyricsFullView(colors, selected, lyrics, view, selectedID, lyricSource)
 	default:
 		return recentSongsView(colors, snapshot, view, selectedID, form, recent, loading, errorText, notice, runtime)
 	}
@@ -463,20 +500,6 @@ func allSongsView(
 	notice stringState,
 	runtime *app.Runtime,
 ) flux.Element {
-	rows := make([]flux.Element, 0, len(songs)*2+1)
-	rows = append(rows, songStatusLine(colors, loading, errorText))
-	if len(songs) == 0 {
-		rows = append(rows, emptyBox(colors, "没有匹配的歌曲"))
-	}
-	for index, item := range songs {
-		if index > 0 || len(rows) > 1 {
-			rows = append(rows, flux.VSpacerElement(8))
-		}
-		item := item
-		rows = append(rows, flux.Key(fmt.Sprintf("song-row-%d", item.ID),
-			songListRow(colors, item, selectedID, deleteID, deleteTitle, form, view, notice, runtime),
-		))
-	}
 	return flux.StackElement(
 		flux.ScrollViewElement(
 			flux.ColumnElement(
@@ -500,7 +523,9 @@ func allSongsView(
 						}),
 					)),
 					flux.VSpacerElement(12),
-					flux.ColumnElement(rows...),
+					songStatusLine(colors, loading, errorText),
+					flux.VSpacerElement(8),
+					allSongsVirtualList(colors, songs, selectedID, deleteID, deleteTitle, form, view, notice, runtime),
 				),
 				flux.VSpacerElement(88),
 			),
@@ -517,6 +542,42 @@ func allSongsView(
 					reload.Set(reload.Value() + 1)
 				}),
 			),
+		),
+	)
+}
+
+func allSongsVirtualList(
+	colors palette,
+	songs []song.Song,
+	selectedID int64State,
+	deleteID int64State,
+	deleteTitle stringState,
+	form songFormState,
+	view songViewState,
+	notice stringState,
+	runtime *app.Runtime,
+) flux.Element {
+	if len(songs) == 0 {
+		return emptyBox(colors, "没有匹配的歌曲")
+	}
+	items := append([]song.Song(nil), songs...)
+	return flux.FixedHeightElement(
+		560,
+		flux.ListViewElement(
+			len(items),
+			func(ctx *flux.Context, index int) flux.Element {
+				if index < 0 || index >= len(items) {
+					return flux.SpacerElement(0, 0)
+				}
+				item := items[index]
+				return flux.Key(fmt.Sprintf("song-row-%d", item.ID),
+					songListRow(colors, item, selectedID, deleteID, deleteTitle, form, view, notice, runtime),
+				)
+			},
+			flux.ListVirtualized(true),
+			flux.ListItemSpacing(8),
+			flux.ListPadding(flux.All(2)),
+			flux.ListDecoration(flux.Bg(colors.surface)),
 		),
 	)
 }
@@ -660,7 +721,7 @@ func songDetailView(
 				infoLine(colors, "最近播放", formatSongTime(selected.LastPlayedAt)),
 			)),
 			flux.VSpacerElement(12),
-			flux.FillWidthElement(lyricPreviewPanel(colors, lyrics)),
+			flux.FillWidthElement(lyricPreviewPanel(colors, selected, lyrics, view, selectedID)),
 		),
 		flux.ScrollVertical(true),
 	)
@@ -716,6 +777,12 @@ func songFormView(
 					next.Duration = value
 					form.Set(next)
 				}),
+				flux.VSpacerElement(10),
+				songFixedSourceField(colors, current.FixedLyricSource, func(ctx *flux.Context, value string) {
+					next := form.Value()
+					next.FixedLyricSource = value
+					form.Set(next)
+				}),
 				flux.VSpacerElement(12),
 				flux.RowElement(
 					primaryButton(colors, "保存", func(ctx *flux.Context) {
@@ -737,32 +804,72 @@ func songFormView(
 			flux.FillWidthElement(panel(colors,
 				sectionTitle(colors, "歌词缓存"),
 				flux.VSpacerElement(10),
-				lyricFormField(colors, "TTML DB", current.LyricTTMLDB, func(ctx *flux.Context, value string) {
+				lyricFormField(colors, "TTML DB", current.LyricTTMLDB, current.LyricTTMLDBDelay, func(ctx *flux.Context, value string) {
 					next := form.Value()
 					next.LyricTTMLDB = value
 					form.Set(next)
+				}, func(ctx *flux.Context, value string) {
+					next := form.Value()
+					next.LyricTTMLDBDelay = value
+					form.Set(next)
 				}),
 				flux.VSpacerElement(10),
-				lyricFormField(colors, "QQ 音乐", current.LyricQQ, func(ctx *flux.Context, value string) {
+				lyricFormField(colors, "QQ 音乐", current.LyricQQ, current.LyricQQDelay, func(ctx *flux.Context, value string) {
 					next := form.Value()
 					next.LyricQQ = value
 					form.Set(next)
-				}),
-				flux.VSpacerElement(10),
-				lyricFormField(colors, "酷狗音乐", current.LyricKugou, func(ctx *flux.Context, value string) {
+				}, func(ctx *flux.Context, value string) {
 					next := form.Value()
-					next.LyricKugou = value
+					next.LyricQQDelay = value
 					form.Set(next)
 				}),
 				flux.VSpacerElement(10),
-				lyricFormField(colors, "网易云音乐", current.LyricNetease, func(ctx *flux.Context, value string) {
+				lyricFormField(colors, "酷狗音乐", current.LyricKugou, current.LyricKugouDelay, func(ctx *flux.Context, value string) {
+					next := form.Value()
+					next.LyricKugou = value
+					form.Set(next)
+				}, func(ctx *flux.Context, value string) {
+					next := form.Value()
+					next.LyricKugouDelay = value
+					form.Set(next)
+				}),
+				flux.VSpacerElement(10),
+				lyricFormField(colors, "网易云音乐", current.LyricNetease, current.LyricNeteaseDelay, func(ctx *flux.Context, value string) {
 					next := form.Value()
 					next.LyricNetease = value
+					form.Set(next)
+				}, func(ctx *flux.Context, value string) {
+					next := form.Value()
+					next.LyricNeteaseDelay = value
+					form.Set(next)
+				}),
+				flux.VSpacerElement(10),
+				lyricFormField(colors, "自定义 TTML", current.LyricCustomTTML, current.LyricCustomDelay, func(ctx *flux.Context, value string) {
+					next := form.Value()
+					next.LyricCustomTTML = value
+					form.Set(next)
+				}, func(ctx *flux.Context, value string) {
+					next := form.Value()
+					next.LyricCustomDelay = value
 					form.Set(next)
 				}),
 			)),
 		),
 		flux.ScrollVertical(true),
+	)
+}
+
+func songFixedSourceField(colors palette, value string, onChange func(ctx *flux.Context, value string)) flux.Element {
+	options := append([]flux.SelectOptionItem[string]{{Label: "自动选择", Value: ""}}, lyricSourceOptions()...)
+	return flux.ColumnElement(
+		label(colors, "固定歌词搜索结果"),
+		flux.VSpacerElement(6),
+		flux.SelectElement[string](
+			value,
+			options,
+			flux.SelectMaxHeight[string](240),
+			flux.SelectOnChange[string](onChange),
+		),
 	)
 }
 
@@ -779,9 +886,26 @@ func songFormField(colors palette, title, value, placeholder string, onChange fu
 	)
 }
 
-func lyricFormField(colors palette, title, value string, onChange func(ctx *flux.Context, value string)) flux.Element {
+func lyricFormField(
+	colors palette,
+	title string,
+	value string,
+	delay string,
+	onChange func(ctx *flux.Context, value string),
+	onDelayChange func(ctx *flux.Context, value string),
+) flux.Element {
 	return flux.ColumnElement(
-		label(colors, title),
+		flux.RowElement(
+			flux.ExpandedElement(label(colors, title)),
+			flux.FixedWidthElement(118,
+				flux.OutlinedTextFieldElement(
+					delay,
+					flux.InputPlaceholder("延迟 ms"),
+					flux.InputSingleLine(true),
+					flux.InputOnChange(onDelayChange),
+				),
+			),
+		),
 		flux.VSpacerElement(6),
 		flux.FillWidthElement(flux.FixedHeightElement(
 			96,
@@ -795,31 +919,64 @@ func lyricFormField(colors palette, title, value string, onChange func(ctx *flux
 	)
 }
 
-func lyricPreviewPanel(colors palette, lyrics []song.LyricSource) flux.Element {
+func lyricPreviewPanel(colors palette, selected song.Song, lyrics []song.LyricSource, view songViewState, selectedID int64State) flux.Element {
 	children := []flux.Element{
-		sectionTitle(colors, "歌词预览"),
+		flux.RowElement(
+			sectionTitle(colors, "歌词预览"),
+			flux.ExpandedElement(flux.SpacerElement(0, 0)),
+			secondaryButton(colors, "查看已应用", func(ctx *flux.Context) {
+				if selected.ID <= 0 {
+					return
+				}
+				selectedID.Set(selected.ID)
+				view.Set(songViewLyrics, router.TransitionSlideLeft)
+			}),
+		),
 		flux.VSpacerElement(12),
 	}
-	if len(lyrics) == 0 {
+	ordered := orderedLyricSources(lyrics)
+	if len(ordered) == 0 {
 		children = append(children, emptyBox(colors, "暂无歌词缓存"))
 		return panel(colors, children...)
 	}
-	for index, lyric := range lyrics {
+	for index, lyric := range ordered {
 		if index > 0 {
 			children = append(children, flux.VSpacerElement(8))
 		}
-		children = append(children, lyricPreviewCard(colors, lyric))
+		children = append(children, lyricPreviewCard(colors, selected, lyric, selectedID))
 	}
 	return panel(colors, children...)
 }
 
-func lyricPreviewCard(colors palette, lyric song.LyricSource) flux.Element {
+func orderedLyricSources(lyrics []song.LyricSource) []song.LyricSource {
+	bySource := make(map[string]song.LyricSource, len(lyrics))
+	for _, item := range lyrics {
+		bySource[item.Source] = item
+	}
+	out := make([]song.LyricSource, 0, len(song.LyricSources))
+	for _, source := range song.LyricSources {
+		item := bySource[source]
+		item.Source = source
+		out = append(out, item)
+	}
+	return out
+}
+
+func lyricPreviewCard(colors palette, selected song.Song, lyric song.LyricSource, selectedID int64State) flux.Element {
 	content := lyricContent(lyric)
 	status := "暂无"
 	statusColor := colors.subtle
-	if strings.TrimSpace(content) != "" {
+	hasContent := strings.TrimSpace(content) != ""
+	if hasContent {
 		status = "可预览"
 		statusColor = colors.primary
+	}
+	openFull := func(ctx *flux.Context) {
+		if selected.ID <= 0 || !hasContent {
+			return
+		}
+		selectedID.Set(selected.ID)
+		flux.Navigate(ctx, fmt.Sprintf("/songs/%d/lyrics?source=%s", selected.ID, url.QueryEscape(lyric.Source)), flux.WithNavTransition(router.TransitionSlideLeft))
 	}
 	return flux.ContainerDecorationElement(
 		flux.Bg(colors.muted).WithPad(flux.All(12)).WithRad(8).WithBorder(flux.Border{Width: 1, Color: colors.border}),
@@ -827,11 +984,206 @@ func lyricPreviewCard(colors palette, lyric song.LyricSource) flux.Element {
 			flux.RowElement(
 				flux.TextElement(lyricSourceLabel(lyric.Source), flux.TextSize(13), flux.TextColor(colors.text)),
 				flux.ExpandedElement(flux.SpacerElement(0, 0)),
+				statusChip(colors, formatLyricDelayChip(lyric.DelayMs), colors.barBase),
+				flux.HSpacerElement(6),
 				statusChip(colors, status, statusColor),
 			),
 			flux.VSpacerElement(8),
 			flux.TextElement(lyricPreviewText(content), flux.TextSize(12), flux.TextColor(colors.subtle)),
+			flux.VSpacerElement(8),
+			flux.RowElement(
+				flux.ExpandedElement(flux.SpacerElement(0, 0)),
+				secondaryButton(colors, "查看全部歌词", openFull),
+			),
 		),
+	)
+}
+
+func songLyricsFullView(colors palette, selected song.Song, lyrics []song.LyricSource, view songViewState, selectedID int64State, lyricSource string) flux.Element {
+	if selected.ID == 0 {
+		return flux.ScrollViewElement(
+			flux.FillWidthElement(panel(colors,
+				flux.RowElement(
+					songBackButton(colors, "返回", func(ctx *flux.Context) {
+						view.Set(songViewAll, router.TransitionSlideRight)
+					}),
+					flux.HSpacerElement(8),
+					sectionTitle(colors, "歌词"),
+				),
+				flux.VSpacerElement(12),
+				emptyBox(colors, "请选择一首歌曲"),
+			)),
+			flux.ScrollVertical(true),
+		)
+	}
+	selectedLyric, ok := preferredLyricForDisplay(selected, lyrics, lyricSource)
+	if !ok {
+		return flux.ScrollViewElement(
+			flux.FillWidthElement(panel(colors,
+				flux.RowElement(
+					songBackButton(colors, "返回", func(ctx *flux.Context) {
+						selectedID.Set(selected.ID)
+						view.Set(songViewDetail, router.TransitionSlideRight)
+					}),
+					flux.HSpacerElement(8),
+					sectionTitle(colors, "歌词"),
+				),
+				flux.VSpacerElement(12),
+				emptyBox(colors, "暂无可查看的歌词"),
+			)),
+			flux.ScrollVertical(true),
+		)
+	}
+	content := lyricContent(selectedLyric)
+	document, err := cachedLyricDocumentFor(content)
+	children := []flux.Element{
+		flux.FillWidthElement(panel(colors,
+			flux.RowElement(
+				songBackButton(colors, "返回", func(ctx *flux.Context) {
+					selectedID.Set(selected.ID)
+					view.Set(songViewDetail, router.TransitionSlideRight)
+				}),
+				flux.HSpacerElement(8),
+				sectionTitle(colors, "歌词"),
+				flux.ExpandedElement(flux.SpacerElement(0, 0)),
+				statusChip(colors, formatLyricDelayChip(selectedLyric.DelayMs), colors.barBase),
+				flux.HSpacerElement(6),
+				statusChip(colors, lyricSourceLabel(selectedLyric.Source), colors.primaryContainer),
+			),
+			flux.VSpacerElement(10),
+			infoLine(colors, "歌曲", selected.Title),
+			infoLine(colors, "艺人", selected.Artist),
+		)),
+		flux.VSpacerElement(12),
+	}
+	if err != nil {
+		children = append(children, flux.FillWidthElement(panel(colors, emptyBox(colors, "歌词解析失败: "+err.Error()))))
+		return flux.ScrollViewElement(flux.ColumnElement(children...), flux.ScrollVertical(true))
+	}
+	if len(document.Metadata) > 0 {
+		children = append(children, flux.FillWidthElement(ttmlMetadataPanel(colors, document.Metadata)), flux.VSpacerElement(12))
+	}
+	children = append(children, flux.FillWidthElement(fullLyricLinesPanel(colors, document)))
+	return flux.ScrollViewElement(
+		flux.ColumnElement(children...),
+		flux.ScrollVertical(true),
+	)
+}
+
+func preferredLyricForDisplay(selected song.Song, lyrics []song.LyricSource, explicitSource string) (song.LyricSource, bool) {
+	explicitSource = strings.TrimSpace(explicitSource)
+	if explicitSource != "" {
+		for _, item := range lyrics {
+			if item.Source == explicitSource && strings.TrimSpace(lyricContent(item)) != "" {
+				return item, true
+			}
+		}
+		return song.LyricSource{}, false
+	}
+	priority := []string{}
+	if strings.TrimSpace(selected.FixedLyricSource) != "" {
+		priority = append(priority, selected.FixedLyricSource)
+	}
+	priority = append(priority, selected.AppliedLyricSource, song.SourceTTMLDB, song.SourceQQ, song.SourceKugou, song.SourceNetease, song.SourceCustom)
+	bySource := map[string]song.LyricSource{}
+	for _, item := range lyrics {
+		if strings.TrimSpace(lyricContent(item)) == "" {
+			continue
+		}
+		bySource[item.Source] = item
+	}
+	for _, source := range priority {
+		if item, ok := bySource[source]; ok {
+			return item, true
+		}
+	}
+	for _, item := range bySource {
+		return item, true
+	}
+	return song.LyricSource{}, false
+}
+
+func ttmlMetadataPanel(colors palette, metadata []lyric.Metadata) flux.Element {
+	rows := []flux.Element{
+		sectionTitle(colors, "TTML 元数据"),
+		flux.VSpacerElement(10),
+	}
+	for _, item := range metadata {
+		rows = append(rows, infoLine(colors, item.Key, strings.Join(item.Values, ", ")))
+	}
+	return panel(colors, rows...)
+}
+
+func fullLyricLinesPanel(colors palette, document lyric.Document) flux.Element {
+	document = document.Normalized()
+	rows := []flux.Element{
+		sectionTitle(colors, "全文歌词"),
+		flux.VSpacerElement(10),
+	}
+	if len(document.Lines) == 0 {
+		rows = append(rows, emptyBox(colors, "暂无歌词行"))
+		return panel(colors, rows...)
+	}
+	lines := append([]lyric.Line(nil), document.Lines...)
+	rows = append(rows,
+		flux.FixedHeightElement(
+			520,
+			flux.ListViewElement(
+				len(lines),
+				func(ctx *flux.Context, index int) flux.Element {
+					if index < 0 || index >= len(lines) {
+						return flux.SpacerElement(0, 0)
+					}
+					return flux.Key(fmt.Sprintf("full-lyric-line-%d-%d", index, lines[index].StartTimeMs),
+						fullLyricLineCard(colors, lines[index]),
+					)
+				},
+				flux.ListVirtualized(true),
+				flux.ListItemSpacing(8),
+				flux.ListPadding(flux.All(2)),
+				flux.ListDecoration(flux.Bg(colors.surface)),
+			),
+		),
+	)
+	return panel(colors, rows...)
+}
+
+func fullLyricLineCard(colors palette, line lyric.Line) flux.Element {
+	text := strings.TrimSpace(line.Text())
+	if text == "" {
+		text = "-"
+	}
+	align := flux.AlignStart
+	if line.IsDuet {
+		align = flux.AlignEnd
+	}
+	textSize := float32(14)
+	if line.IsBackground {
+		textSize = 12
+	}
+	badges := []flux.Element{
+		statusChip(colors, formatMillis(line.StartTimeMs)+" - "+formatMillis(line.EndTimeMs), colors.barBase),
+	}
+	if line.IsBackground {
+		badges = append(badges, flux.HSpacerElement(6), statusChip(colors, "背景", colors.barBase))
+	}
+	if line.IsDuet {
+		badges = append(badges, flux.HSpacerElement(6), statusChip(colors, "对唱", colors.primaryContainer))
+	}
+	children := []flux.Element{
+		flux.RowElement(badges...),
+		flux.VSpacerElement(8),
+		flux.TextElement(text, flux.TextSize(textSize), flux.TextColor(colors.text), flux.TextAlign(align)),
+	}
+	if strings.TrimSpace(line.TranslatedLyric) != "" {
+		children = append(children, flux.VSpacerElement(5), flux.TextElement(strings.TrimSpace(line.TranslatedLyric), flux.TextSize(12), flux.TextColor(colors.subtle), flux.TextAlign(align)))
+	}
+	if strings.TrimSpace(line.RomanLyric) != "" {
+		children = append(children, flux.VSpacerElement(4), flux.TextElement(strings.TrimSpace(line.RomanLyric), flux.TextSize(11), flux.TextColor(colors.subtle), flux.TextAlign(align)))
+	}
+	return flux.ContainerDecorationElement(
+		flux.Bg(colors.muted).WithPad(flux.All(12)).WithRad(8).WithBorder(flux.Border{Width: 1, Color: colors.border}),
+		flux.ColumnElement(children...),
 	)
 }
 
@@ -991,11 +1343,38 @@ func saveFormLyrics(runtime *app.Runtime, songID int64, form songForm) error {
 		song.SourceNetease: form.LyricNetease,
 	}
 	for source, value := range values {
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
 		if err := runtime.SetSongLyric(context.Background(), songID, source, value, ""); err != nil {
 			return err
 		}
 	}
+	if strings.TrimSpace(form.LyricCustomTTML) != "" {
+		if err := runtime.SetSongLyric(context.Background(), songID, song.SourceCustom, "", form.LyricCustomTTML); err != nil {
+			return err
+		}
+	}
+	for source, value := range lyricDelayInputs(form) {
+		delay, err := parseLyricDelayInput(value)
+		if err != nil {
+			return fmt.Errorf("%s 歌词延迟无效: %w", lyricSourceLabel(source), err)
+		}
+		if err := runtime.SetSongLyricDelay(context.Background(), songID, source, delay); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+func lyricDelayInputs(form songForm) map[string]string {
+	return map[string]string{
+		song.SourceTTMLDB:  form.LyricTTMLDBDelay,
+		song.SourceQQ:      form.LyricQQDelay,
+		song.SourceKugou:   form.LyricKugouDelay,
+		song.SourceNetease: form.LyricNeteaseDelay,
+		song.SourceCustom:  form.LyricCustomDelay,
+	}
 }
 
 func songInputFromForm(form songForm) (song.Input, error) {
@@ -1004,10 +1383,11 @@ func songInputFromForm(form songForm) (song.Input, error) {
 		return song.Input{}, err
 	}
 	input := song.Input{
-		Title:      strings.TrimSpace(form.Title),
-		Artist:     strings.TrimSpace(form.Artist),
-		Album:      strings.TrimSpace(form.Album),
-		DurationMs: duration,
+		Title:            strings.TrimSpace(form.Title),
+		Artist:           strings.TrimSpace(form.Artist),
+		Album:            strings.TrimSpace(form.Album),
+		DurationMs:       duration,
+		FixedLyricSource: strings.TrimSpace(form.FixedLyricSource),
 	}
 	if input.Title == "" {
 		return song.Input{}, fmt.Errorf("标题不能为空")
@@ -1017,23 +1397,31 @@ func songInputFromForm(form songForm) (song.Input, error) {
 
 func songFormFromSong(item song.Song, lyrics []song.LyricSource) songForm {
 	form := songForm{
-		ID:       item.ID,
-		Title:    item.Title,
-		Artist:   item.Artist,
-		Album:    item.Album,
-		Duration: formatDurationInput(item.DurationMs),
+		ID:               item.ID,
+		Title:            item.Title,
+		Artist:           item.Artist,
+		Album:            item.Album,
+		Duration:         formatDurationInput(item.DurationMs),
+		FixedLyricSource: item.FixedLyricSource,
 	}
 	for _, lyric := range lyrics {
 		value := lyricEditContent(lyric)
 		switch lyric.Source {
 		case song.SourceTTMLDB:
 			form.LyricTTMLDB = value
+			form.LyricTTMLDBDelay = formatLyricDelayInput(lyric.DelayMs)
 		case song.SourceQQ:
 			form.LyricQQ = value
+			form.LyricQQDelay = formatLyricDelayInput(lyric.DelayMs)
 		case song.SourceKugou:
 			form.LyricKugou = value
+			form.LyricKugouDelay = formatLyricDelayInput(lyric.DelayMs)
 		case song.SourceNetease:
 			form.LyricNetease = value
+			form.LyricNeteaseDelay = formatLyricDelayInput(lyric.DelayMs)
+		case song.SourceCustom:
+			form.LyricCustomTTML = value
+			form.LyricCustomDelay = formatLyricDelayInput(lyric.DelayMs)
 		}
 	}
 	return form
@@ -1076,6 +1464,35 @@ func formatDurationInput(ms int64) string {
 	return formatMillis(ms)
 }
 
+func parseLyricDelayInput(value string) (int64, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, nil
+	}
+	delay, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("请输入整数毫秒")
+	}
+	return delay, nil
+}
+
+func formatLyricDelayInput(ms int64) string {
+	if ms == 0 {
+		return ""
+	}
+	return strconv.FormatInt(ms, 10)
+}
+
+func formatLyricDelayChip(ms int64) string {
+	if ms == 0 {
+		return "0 ms"
+	}
+	if ms > 0 {
+		return fmt.Sprintf("+%d ms", ms)
+	}
+	return fmt.Sprintf("%d ms", ms)
+}
+
 func lyricContent(lyric song.LyricSource) string {
 	if strings.TrimSpace(lyric.TTMLLyric) != "" {
 		return lyric.TTMLLyric
@@ -1095,7 +1512,7 @@ func lyricPreviewText(value string) string {
 	if value == "" {
 		return "暂无歌词"
 	}
-	document, err := lyric.Parse(value)
+	document, err := cachedLyricDocumentFor(value)
 	if err == nil {
 		if preview := lyric.PreviewText(document, 8); strings.TrimSpace(preview) != "" {
 			return preview
@@ -1106,6 +1523,34 @@ func lyricPreviewText(value string) string {
 		return preview
 	}
 	return "暂无可预览内容"
+}
+
+func cachedLyricDocumentFor(value string) (lyric.Document, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return lyric.Document{}, fmt.Errorf("lyric content is empty")
+	}
+	key := lyricDocumentCacheKey(value)
+	lyricDocumentCache.Lock()
+	if cached, ok := lyricDocumentCache.values[key]; ok {
+		lyricDocumentCache.Unlock()
+		return cached.Document, cached.Err
+	}
+	lyricDocumentCache.Unlock()
+
+	document, err := lyric.Parse(value)
+	lyricDocumentCache.Lock()
+	if len(lyricDocumentCache.values) >= lyricDocumentCacheMax {
+		lyricDocumentCache.values = map[string]cachedLyricDocument{}
+	}
+	lyricDocumentCache.values[key] = cachedLyricDocument{Document: document, Err: err}
+	lyricDocumentCache.Unlock()
+	return document, err
+}
+
+func lyricDocumentCacheKey(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return fmt.Sprintf("%d:%x", len(value), sum)
 }
 
 func songArtistAlbum(item song.Song) string {

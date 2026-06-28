@@ -93,12 +93,13 @@ func documentFromAMLXLyric(input *musicapi.Lyric, metadata []Metadata) Document 
 	if input == nil {
 		return Document{}
 	}
-	return DocumentFromTimedLines(
-		convertAMLXLines(input.Lines),
-		convertAMLXLines(input.Translation),
-		convertAMLXLines(input.Romanization),
-		metadata,
-	)
+	translations := convertAMLXLines(input.Translation)
+	romanizations := convertAMLXLines(input.Romanization)
+	if doc, ok, err := parsePlatformRaw(input.Raw); err == nil && ok && IsUsable(doc) {
+		doc.Metadata = append(cloneMetadata(metadata), doc.Metadata...)
+		return mergeDocumentAuxiliaryLines(doc, translations, romanizations)
+	}
+	return DocumentFromTimedLines(convertAMLXLines(input.Lines), translations, romanizations, metadata)
 }
 
 func convertAMLXLines(lines []musicapi.LyricLine) []TimedTextLine {
@@ -120,6 +121,19 @@ func convertAMLXLines(lines []musicapi.LyricLine) []TimedTextLine {
 		out = append(out, item)
 	}
 	return out
+}
+
+func mergeDocumentAuxiliaryLines(doc Document, translations []TimedTextLine, romanizations []TimedTextLine) Document {
+	doc = doc.Normalized()
+	for i := range doc.Lines {
+		if strings.TrimSpace(doc.Lines[i].TranslatedLyric) == "" {
+			doc.Lines[i].TranslatedLyric = matchingAuxText(translations, doc.Lines[i].StartTimeMs)
+		}
+		if strings.TrimSpace(doc.Lines[i].RomanLyric) == "" {
+			doc.Lines[i].RomanLyric = matchingAuxText(romanizations, doc.Lines[i].StartTimeMs)
+		}
+	}
+	return doc.Normalized()
 }
 
 func rawAMLXLyric(input *musicapi.Lyric) string {

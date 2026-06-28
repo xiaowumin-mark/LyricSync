@@ -23,8 +23,11 @@ type spectrumProcessor struct {
 	aWeights    []float64
 	bands       []spectrumBand
 	history     [][]float64
+	historyPos  int
+	historyLen  int
 	historyMax  int
 	smoothed    []float64
+	scratch     []float64
 
 	fft    []complex128
 	window []float64
@@ -78,7 +81,10 @@ func (p *spectrumProcessor) configure(sampleRate, outBands int) {
 	p.bands = makeSpectrumBands(p.startFrequency, math.Min(p.endFrequency, float64(sampleRate)/2), outBands)
 	p.kernel, p.kernelSum = gaussianKernel(p.filterRadius, p.filterSigma)
 	p.history = nil
+	p.historyPos = 0
+	p.historyLen = 0
 	p.smoothed = nil
+	p.scratch = make([]float64, len(p.frequencies))
 
 	bandwidth := float64(sampleRate) / float64(p.fftSize)
 	for i := range p.aWeights {
@@ -125,32 +131,47 @@ func (p *spectrumProcessor) gaussianFilter() {
 	if p.filterRadius <= 0 || p.kernelSum <= 0 {
 		return
 	}
-	source := append([]float64(nil), p.frequencies...)
+	if len(p.scratch) != len(p.frequencies) {
+		p.scratch = make([]float64, len(p.frequencies))
+	}
+	copy(p.scratch, p.frequencies)
 	for i := range p.frequencies {
 		var sum float64
 		for offset := -p.filterRadius; offset <= p.filterRadius; offset++ {
 			index := i + offset
-			if index < 0 || index >= len(source) {
+			if index < 0 || index >= len(p.scratch) {
 				continue
 			}
-			sum += source[index] * p.kernel[offset+p.filterRadius]
+			sum += p.scratch[index] * p.kernel[offset+p.filterRadius]
 		}
 		p.frequencies[i] = sum / p.kernelSum
 	}
 }
 
 func (p *spectrumProcessor) timeWeight() {
-	frame := append([]float64(nil), p.frequencies...)
-	p.history = append([][]float64{frame}, p.history...)
-	if len(p.history) > p.historyMax {
-		p.history = p.history[:p.historyMax]
+	if p.historyMax <= 0 {
+		return
+	}
+	if len(p.history) != p.historyMax || (len(p.history) > 0 && len(p.history[0]) != len(p.frequencies)) {
+		p.history = make([][]float64, p.historyMax)
+		for i := range p.history {
+			p.history[i] = make([]float64, len(p.frequencies))
+		}
+		p.historyPos = 0
+		p.historyLen = 0
+	}
+	copy(p.history[p.historyPos], p.frequencies)
+	p.historyPos = (p.historyPos + 1) % p.historyMax
+	if p.historyLen < p.historyMax {
+		p.historyLen++
 	}
 	for i := range p.frequencies {
 		var sum float64
-		for _, historyFrame := range p.history {
+		for j := 0; j < p.historyLen; j++ {
+			historyFrame := p.history[j]
 			sum += historyFrame[i]
 		}
-		p.frequencies[i] = sum / float64(len(p.history))
+		p.frequencies[i] = sum / float64(p.historyLen)
 	}
 }
 

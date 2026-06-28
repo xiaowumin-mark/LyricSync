@@ -13,6 +13,7 @@ func TestMoveLyricPriorityMovesByDirection(t *testing.T) {
 		model.LyricSourceQQ,
 		model.LyricSourceKugou,
 		model.LyricSourceNetease,
+		model.LyricSourceCustom,
 	}
 
 	got := moveLyricPriority(priority, model.LyricSourceQQ, 1)
@@ -21,6 +22,7 @@ func TestMoveLyricPriorityMovesByDirection(t *testing.T) {
 		model.LyricSourceKugou,
 		model.LyricSourceQQ,
 		model.LyricSourceNetease,
+		model.LyricSourceCustom,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("move down = %#v, want %#v", got, want)
@@ -32,6 +34,7 @@ func TestMoveLyricPriorityMovesByDirection(t *testing.T) {
 		model.LyricSourceKugou,
 		model.LyricSourceQQ,
 		model.LyricSourceNetease,
+		model.LyricSourceCustom,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("move up = %#v, want %#v", got, want)
@@ -42,7 +45,7 @@ func TestMoveLyricPriorityMovesByDirection(t *testing.T) {
 		t.Fatalf("move first up = %#v, want unchanged %#v", got, priority)
 	}
 
-	got = moveLyricPriority(priority, model.LyricSourceNetease, 1)
+	got = moveLyricPriority(priority, model.LyricSourceCustom, 1)
 	if !reflect.DeepEqual(got, priority) {
 		t.Fatalf("move last down = %#v, want unchanged %#v", got, priority)
 	}

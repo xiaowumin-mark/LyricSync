@@ -32,7 +32,7 @@
 | 4 | 配置、日志与基础持久化 | 已完成 | 2026-06-26 | 本文档 |
 | 5 | 歌曲数据库与播放记录 | 已完成 | 2026-06-27 | 本文档 |
 | 6 | 统一歌词结构与 TTML 能力 | 已完成 | 2026-06-27 | 本文档 |
-| 7 | 歌词来源接入与并行搜索 | 未开始 | - | - |
+| 7 | 歌词来源接入与并行搜索 | 已完成 | 2026-06-27 | 本文档 |
 | 8 | 歌词任务调度与防堆积 | 未开始 | - | - |
 | 9 | AI 处理能力 | 未开始 | - | - |
 | 10 | AMLL 完整同步 | 未开始 | - | - |
@@ -88,6 +88,86 @@ go test ./...
 
 ```text
 通过
+```
+
+## 阶段 7 后续修正：歌曲去重与仪表盘性能
+
+完成日期：2026-06-27
+
+状态：已完成。
+
+### 调整原因
+
+- 部分播放器会把专辑信息拼到 SMTC 艺人字段里，导致数据库记录和下一次 SMTC 原始信息无法匹配，重复创建歌曲。
+- 普通短横线 `-` 过早参与拆分会误伤正常歌名或艺人名，需要只作为兼容匹配使用。
+- 仪表盘加入完整歌词窗口后，播放进度更新时不应反复扫描整份歌词或复制可见歌词切片。
+
+### 已完成内容
+
+- `song.Input` 清洗优先使用 `—`、`–`、`|`、斜杠等明确分隔符拆分混合元数据。
+- 普通 ` - ` 只进入候选 key 兼容匹配，不作为首轮存储标准化规则。
+- 歌曲数据库记录播放时会尝试标准 key、兼容拆分 key、旧版混合艺人 key，命中后统一写回标准 title/artist/album。
+- 数据库启动迁移会用同一套候选规则合并旧重复记录，并同步修正展示字段。
+- 仪表盘歌词窗口保持原显示效果，但范围计算改为二分定位 active 候选，再局部扩展同时 active 行。
+- 仪表盘歌词渲染去掉每次播放进度刷新时的可见歌词切片复制。
+
+### 验证方式
+
+执行：
+
+```powershell
+go test ./...
+gopls check internal/song/song.go internal/song/repository.go internal/song/repository_test.go internal/ui/dashboard.go internal/ui/dashboard_test.go
+```
+
+结果：
+
+```text
+通过
+```
+
+## 阶段 7 后续修正：首页性能回退修复
+
+完成日期：2026-06-27
+
+状态：已完成。
+
+### 调整原因
+
+- 加入完整歌词、封面传输和波形后，首页播放状态刷新路径承担了过多重复工作。
+- UI 快照在高频事件下复制封面二进制，仪表盘渲染又重复计算封面 hash 和检查缓存文件。
+- 音频频谱处理每帧复制频率数组和重建 history，造成持续分配。
+
+### 已完成内容
+
+- `Store.Snapshot()` 不再复制 `CoverData` 大字节，快照更新时间改为状态变更时维护。
+- UI 订阅对 `playback_progress` 和 `audio_frame` 统一降频，避免音频帧直接驱动全量 UI 快照。
+- `audio_frame` 事件 payload 去掉 PCM，避免 UI 订阅通道持有大块音频数据。
+- 仪表盘封面路径按 `CoverHash` 做内存缓存，缓存命中不再 hash、不再 `os.Stat`、不再分配。
+- 仪表盘歌词行渲染移除每帧 `TrimSpace`。
+- 波形稳定器复用 current/target slice，重采样路径 0 分配。
+- 频谱处理复用 Gaussian scratch 和环形 history，避免每帧数组复制和切片前插。
+- 新增 UI 和频谱微基准，后续性能改动可量化对比。
+
+### 验证方式
+
+执行：
+
+```powershell
+go test ./...
+gopls check internal/media/spectrum.go internal/media/spectrum_test.go internal/state/state.go internal/ui/ui.go internal/ui/dashboard.go internal/ui/dashboard_test.go
+go test ./internal/media -run '^$' -bench BenchmarkSpectrumProcessorProcess -benchmem
+go test ./internal/ui -run '^$' -bench 'Benchmark(DashboardLyricRange|ResampleWaveformInto|CoverCachePathCached)$' -benchmem
+```
+
+结果：
+
+```text
+通过
+BenchmarkSpectrumProcessorProcess-8    151482 ns/op    261 B/op    1 allocs/op
+BenchmarkDashboardLyricRange-8             87.18 ns/op   0 B/op    0 allocs/op
+BenchmarkResampleWaveformInto-8          2316 ns/op      0 B/op    0 allocs/op
+BenchmarkCoverCachePathCached-8            39.85 ns/op   0 B/op    0 allocs/op
 ```
 
 ### 关键决策
@@ -762,11 +842,11 @@ go test ./...
   - `TranslatedLyric`、`RomanLyric`、`Word.RomanText` 字段。
   - `IsBackground`、`IsDuet`、`IgnoreSync` 等 TTML 可表达行属性。
   - 逐词 `StartTimeMs` / `EndTimeMs` 时间轴。
-- 参考 `/ref/amll-ttml` 的结构能力，实现项目内独立 TTML 处理：
-  - `ParseTTML`
-  - `GenerateTTML`
-  - `CompressTTML`
-  - `ParseTimestamp` / `FormatTimestamp`
+- 通过 `go get github.com/xiaowumin-mark/amll-ttml` 接入官方 TTML 库，本项目只保留内部模型适配层：
+  - `ParseTTML` 调用 `amllttml.ParseLyric`，再转换为 `internal/lyric.Document`。
+  - `GenerateTTML` 将 `internal/lyric.Document` 转换为 `amllttml.TTMLLyric`，再调用 `amllttml.ExportTTMLText`。
+  - `CompressTTML` 使用官方库解析和紧凑导出。
+  - `ParseTimestamp` / `FormatTimestamp` 仅用于 LRC、预览和内部时间格式化，不参与 TTML XML 解析或生成。
 - 增加 LRC/普通文本入口：
   - LRC 可转换为统一逐行结构。
   - 普通文本可用于预览，但因没有时间轴不会被判定为可直接同步歌词。
@@ -829,7 +909,8 @@ go test ./...
 
 ### 关键决策
 
-- `/ref/amll-ttml` 只作为结构和行为参考，不直接 import 参考仓库代码。
+- TTML 解析、生成和压缩不在项目内自写 XML 逻辑，统一委托 `github.com/xiaowumin-mark/amll-ttml` 官方依赖。
+- `/ref/amll-ttml` 只作为结构和行为参考；实际依赖通过 Go module 引入，不直接 import `/ref` 目录代码。
 - 数据库仍保存原始歌词和统一后的 TTML 两份数据：原始歌词便于后续排查和重新清洗，TTML 作为统一处理链路与 AMLL 输出格式。
 - UI 预览和仪表盘只消费统一结构导出的逐行歌词，不依赖 QQ、网易、酷狗或 TTML DB 的原始结构。
 - 普通文本可预览但不判定为可同步歌词，避免没有时间轴的歌词被误发给 AMLL。
@@ -837,7 +918,7 @@ go test ./...
 
 ### 遗留问题
 
-- 当前 TTML 解析覆盖主流 `p/span`、翻译、音译和背景行场景，复杂 iTunes metadata 翻译/逐词音译映射后续接入 TTML DB 大样本时继续增强。
+- TTML 正确性跟随 `amll-ttml` 官方库；后续如果遇到兼容性问题，应优先升级依赖或调整适配层字段映射，不在项目内重新实现 TTML XML 解析器。
 - 多平台原始歌词结构转换尚未实现，将在阶段 7 接入 QQ、网易、酷狗、TTML DB 搜索时补齐。
 - AI 清洗、翻译、音译和任务取消策略尚未接入，将在阶段 8 到阶段 9 完成。
 
@@ -982,3 +1063,260 @@ go test ./...
 - 进一步完善歌词搜索任务队列和 revision 保护。
 - 处理更复杂的快速切歌、AI 长任务和手动应用歌词场景。
 - 增强任务状态日志和 UI 可见反馈。
+
+## 阶段 7 后续修正：歌词匹配、TTML 依赖与歌词展示
+
+完成日期：2026-06-27
+
+状态：已完成。
+
+### 调整原因
+
+- 部分播放器在未播放时会通过 SMTC 上报等待文案，不能把这类文本当作歌曲写入数据库。
+- 部分播放器会把艺人、专辑或标题混写到同一字段，需要做保守拆分和修正。
+- TTML 解析和生成不应由本项目自写，必须使用 `amll-ttml` 官方库。
+- TTML DB 匹配过宽，随机字符串也可能命中，需要降低误匹配风险。
+- 用户需要自定义 TTML 歌词、固定歌词来源、完整歌词预览和仪表盘完整歌词展示。
+
+### 已完成内容
+
+- 接入 `github.com/xiaowumin-mark/amll-ttml` 作为直接依赖，删除项目内自写 TTML XML 解析和生成逻辑。
+- `internal/lyric/ttml.go` 改为官方库薄适配层：
+  - `ParseTTML` 使用 `amllttml.ParseLyric`。
+  - `GenerateTTML` 使用 `amllttml.ExportTTMLText`。
+  - `CompressTTML` 使用官方库解析后再紧凑导出。
+- 新增 SMTC 歌曲可记录性判断：标题和艺人必须同时存在，并过滤 waiting、loading、unknown、no media 等占位文本。
+- 增加混合元数据拆分逻辑，对 `Artist - Title`、`Artist - Album` 等常见形式做保守修正。
+- 歌曲数据库新增 `fixed_lyric_source`，支持用户固定使用某一个歌词来源，取消自动匹配。
+- 歌词来源新增 `custom`，每首歌都有自定义 TTML 歌词槽位，并参与优先级兜底。
+- 歌曲编辑页支持固定歌词来源选择和自定义 TTML 粘贴保存。
+- 歌词选择逻辑支持固定来源；未固定时按设置优先级选择，并把 `custom` 放在最后兜底。
+- 收紧 TTML DB 匹配阈值，并过滤“只有 TTML DB 命中、QQ/酷狗/网易全部无可用结果”的可疑结果。
+- 仪表盘歌词区域改为完整逐行渲染，支持普通行、背景行、对唱、翻译和音译展示。
+- 仪表盘新增当前歌曲详情按钮，可直接跳转当前歌曲数据库详情页。
+- 歌曲详情页歌词预览新增“查看全部歌词”，并新增全文歌词路由 `/songs/:id/lyrics`。
+- 全文歌词页显示 TTML metadata、每行起止时间、背景行/对唱标记、翻译和音译。
+
+### 交付物
+
+- TTML 官方库适配：
+  - `internal/lyric/ttml.go`
+  - `go.mod`
+  - `go.sum`
+- 歌词搜索和匹配增强：
+  - `internal/lyric/search_service.go`
+  - `internal/lyric/provider_ttmldb.go`
+- 歌曲模型和数据库迁移：
+  - `internal/song/song.go`
+  - `internal/song/repository.go`
+- 自动记录与歌词应用：
+  - `internal/app/app.go`
+  - `internal/model/model.go`
+  - `internal/config/config.go`
+- UI 调整：
+  - `internal/ui/dashboard.go`
+  - `internal/ui/songs.go`
+  - `internal/ui/ui.go`
+- 测试：
+  - `internal/song/repository_test.go`
+
+### 验证方式
+
+执行：
+
+```powershell
+go test ./...
+```
+
+结果：
+
+```text
+通过
+```
+
+### 关键决策
+
+- TTML 的规范兼容性由 `amll-ttml` 官方库负责，本项目不再维护自写 TTML XML parser/writer。
+- 项目内部仍保留 `Document` 作为统一歌词结构，用于 UI、歌词来源转换、可用性判断和 AMLL 输出前的数据整理。
+- 自定义歌词只接受 TTML，避免没有时间轴的文本被误用于 AMLL 同步。
+- TTML DB 不单独作为低置信度歌曲识别依据，至少需要第三方平台搜索结果参与校验，减少占位 SMTC 文案误命中。
+
+### 遗留问题
+
+- 自定义歌词当前支持粘贴 TTML 字符串，文件选择导入可以后续接 FluxUI 文件对话框补齐。
+- SMTC 混合字段拆分只能做保守启发式处理，后续可结合平台搜索结果进一步回填更准确的标题、艺人和专辑。
+
+## 阶段 7 后续修正：歌词性能、五来源预览与来源延迟
+
+完成日期：2026-06-27
+
+状态：已完成。
+
+### 调整原因
+
+- 仪表盘完整歌词渲染后，播放进度高频更新会导致歌词计算和 UI 重绘压力偏高。
+- 歌曲详情页只预览单一歌词来源，不能直接比较 TTML DB、QQ、酷狗、网易和自定义歌词。
+- 固定歌词来源和全局歌词优先级都需要包含自定义歌词，避免用户自填 TTML 无法参与正常选择链路。
+- 不同来源歌词可能与音频有固定时间差，需要为每份歌词提供独立延迟设置，但不能修改歌词文件本身。
+
+### 已完成内容
+
+- UI 状态订阅对播放进度更新做降频处理，减少 dashboard 跟随 60fps 进度重绘的压力。
+- AMLL WebSocket 的实时进度仍保持 60fps 发送，不受 UI 降频影响。
+- 仪表盘歌词区域改为只渲染当前行附近窗口，保留当前上下文展示，避免整首歌在高频进度下反复计算和布局。
+- 全文歌词页改为 FluxUI 虚拟列表，并固定列表高度，打开长歌词时减少一次性布局成本。
+- 歌曲详情页歌词预览固定展示五个来源：`ttml-db`、`qq`、`kugou`、`netease`、`custom`。
+- 全文歌词路由支持 `source` 查询参数，可分别查看每个歌词来源的完整内容。
+- 全局歌词优先级默认加入 `custom`，设置页优先级拖拽、标签和校验逻辑同步支持自定义歌词。
+- 每个歌词来源新增 `delay_ms` 字段，数据库迁移会为旧库补齐默认值。
+- 歌曲编辑页为五个歌词来源都提供延迟毫秒输入，支持正数和负数。
+- AMLL 发送播放进度时按当前应用歌词来源的 `delay_ms` 做偏移；该偏移只影响 WebSocket 同步进度，不修改 TTML 内容，也不影响仪表盘本地高亮。
+- 增加歌词解析缓存，减少详情页、预览页和全文页重复解析同一份 TTML 的开销。
+
+### 交付物
+
+- 仪表盘性能优化：
+  - `internal/ui/dashboard.go`
+  - `internal/state/state.go`
+- 五来源歌词预览与全文路由：
+  - `internal/ui/songs.go`
+  - `internal/ui/ui.go`
+- 歌词来源延迟模型、存储和应用：
+  - `internal/model/model.go`
+  - `internal/song/song.go`
+  - `internal/song/repository.go`
+  - `internal/app/app.go`
+  - `internal/amll/protocol.go`
+  - `internal/amll/connector.go`
+- 设置页自定义歌词优先级：
+  - `internal/config/config.go`
+  - `internal/ui/settings.go`
+- 测试：
+  - `internal/amll/protocol_test.go`
+  - `internal/song/repository_test.go`
+  - `internal/ui/songs_test.go`
+  - `internal/config/config_test.go`
+  - `internal/ui/settings_test.go`
+
+### 验证方式
+
+执行：
+
+```powershell
+go test ./...
+gopls check internal/ui/songs.go internal/ui/dashboard.go internal/app/app.go internal/amll/protocol.go internal/song/repository.go internal/config/config.go internal/ui/settings.go internal/state/state.go
+```
+
+结果：
+
+```text
+通过
+```
+
+### 关键决策
+
+- UI 不再跟随 AMLL 发送频率刷新；AMLL 同步和本地视觉刷新分离。
+- 来源延迟采用“偏移实时进度”的方式实现，避免破坏用户原始歌词和平台原始数据。
+- 自定义歌词作为第五个来源参与优先级和固定来源选择，但仍要求是 TTML，保证后续 AMLL 输出链路稳定。
+
+### 遗留问题
+
+- 自定义歌词文件选择导入仍待接入 FluxUI 文件对话框；当前继续支持直接粘贴 TTML。
+- 若后续长歌词仍出现卡顿，可进一步把详情页五来源预览改成懒解析，仅在展开或进入全文页时解析。
+
+## 阶段 7 后续修正：三平台原始歌词解析与当前歌词刷新
+
+完成日期：2026-06-27
+
+状态：已完成。
+
+### 调整原因
+
+- QQ 音乐、酷狗音乐、网易云音乐返回的 raw 歌词格式不完全一致，不能只按普通 LRC 处理。
+- 网易云存在逐字格式和普通 LRC fallback；酷狗 KRC 内可能带内嵌翻译和音译。
+- 用户设置固定歌词来源后，当前仪表盘和 AMLL WebSocket 应立即应用新的来源。
+- 仪表盘歌词不应继续展示大窗口，应只显示当前 active 歌词附近的少量上下文。
+
+### 已完成内容
+
+- 新增平台 raw 歌词解析入口，自动识别并解析：
+  - 酷狗 KRC：`[start,duration]` 行、`<offset,duration,0>` 逐字时间轴、`[language:...]` 内嵌翻译和音译。
+  - QQ QRC：`[start,duration]` 行、`text(start,duration)` 逐字时间轴、背景和声行识别。
+  - 网易 YRC：`[start,duration]` 行、`(start,duration,0)` 逐字时间轴。
+  - 普通 LRC fallback。
+- `Parse` 和 `NormalizeContent` 统一接入平台 raw 解析，歌曲数据库保存 raw 歌词时会生成正确 TTML。
+- AMLX provider 转换时优先用 raw 重建平台歌词结构，再叠加 AMLX 返回的翻译和音译。
+- 固定歌词来源变更后，如果歌曲是当前播放歌曲，会重新发布当前歌词到 store；AMLL connector 通过 `lyrics_changed` 重新发送 `setLyric`。
+- 仪表盘歌词区域改为显示当前 active 最上方歌词的上一行、同时 active 的歌词行和下一行。
+- 全文歌词页继续使用 FluxUI 虚拟列表。
+
+### 交付物
+
+- 平台 raw 解析：
+  - `internal/lyric/platform_parse.go`
+  - `internal/lyric/parse.go`
+  - `internal/lyric/provider_amlx.go`
+- 固定来源刷新：
+  - `internal/app/app.go`
+- 仪表盘歌词范围：
+  - `internal/ui/dashboard.go`
+- 测试：
+  - `internal/lyric/platform_parse_test.go`
+  - `internal/lyric/source_search_test.go`
+
+### 验证方式
+
+执行：
+
+```powershell
+go test ./...
+gopls check internal/lyric/platform_parse.go internal/lyric/parse.go internal/lyric/provider_amlx.go internal/lyric/source_search_test.go internal/app/app.go internal/ui/dashboard.go internal/ui/songs.go
+```
+
+结果：
+
+```text
+通过
+```
+
+### 关键决策
+
+- 不修改 `AMLX-MUSIC-API` 依赖源码；在 LyricSync 内部把平台 raw 格式转换到统一歌词结构。
+- KRC/QRC/YRC 解析只服务于统一模型和 TTML 输出，避免 UI 直接依赖平台原始结构。
+- 固定来源刷新走现有 `lyrics_changed` 事件，不新增独立 WS 发送路径。
+
+## 阶段 7 后续修正：仪表盘歌词窗口与全部歌曲虚拟列表
+
+完成日期：2026-06-27
+
+状态：已完成。
+
+### 调整原因
+
+- 仪表盘歌词需要保留 active 上方一行，active 下方保持后续歌词窗口，而不是只显示三行。
+- 仪表盘歌词区域不应通过外层滚动容器查看整首歌。
+- 全部歌曲列表可能增长，需要避免一次性构建所有歌曲 item。
+- 固定歌词来源选项需要稳定包含用户自定义歌词。
+
+### 已完成内容
+
+- 仪表盘歌词窗口调整为：active 最上方歌词的上一行、所有同时 active 的歌词行、后续 8 行。
+- 仪表盘歌词区域改用 FluxUI `ListViewElement` 渲染固定窗口，桌面侧栏移除外层歌词滚动。
+- 全部歌曲页面列表改为 FluxUI `ListViewElement`，只构建可见列表项。
+- 固定歌词搜索结果下拉改为复用统一歌词来源选项，包含 `custom` 自定义歌词。
+- 新增仪表盘歌词窗口范围测试，覆盖普通 active 和多行同时 active。
+
+### 验证方式
+
+执行：
+
+```powershell
+go test ./...
+gopls check internal/ui/dashboard.go internal/ui/dashboard_test.go internal/ui/songs.go internal/ui/settings.go
+```
+
+结果：
+
+```text
+通过
+```

@@ -255,11 +255,12 @@ func (c *Connector) run(ctx context.Context, rawURL string, sendAudio bool, outg
 				hasLastProgress = false
 				continue
 			}
-			currentProgress := uint64(maxInt64(playback.Position, 0))
+			delayMs := c.store.LyricDelayMs()
+			currentProgress := uint64(maxInt64(playback.Position-delayMs, 0))
 			if hasLastProgress && currentProgress == lastProgress {
 				continue
 			}
-			message := Progress(playback)
+			message := ProgressWithLyricDelay(playback, delayMs)
 			if err := sendJSON(message, MessageType(message)); err != nil {
 				c.finishWithError(rawURL, err.Error())
 				return
@@ -286,7 +287,7 @@ func (c *Connector) sendSnapshot(sendJSON func(Message, string) error, sendBinar
 }
 
 func (c *Connector) sendEvent(event model.Event, sendJSON func(Message, string) error, sendBinary func([]byte, string) error, sendAudio bool) error {
-	for _, message := range EventMessages(event) {
+	for _, message := range EventMessagesWithLyricDelay(event, c.store.LyricDelayMs()) {
 		if err := sendJSON(message, MessageType(message)); err != nil {
 			return err
 		}

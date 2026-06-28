@@ -62,6 +62,7 @@ func (r *Repository) RecordPlayback(ctx context.Context, input Input) (Song, boo
 		return Song{}, false, ErrUnrecordable
 	}
 	key := UniqueKey(input)
+	candidates := inputKeyCandidates(input)
 	now := time.Now().UTC()
 
 	tx, err := r.db.BeginTx(ctx, nil)
@@ -70,15 +71,15 @@ func (r *Repository) RecordPlayback(ctx context.Context, input Input) (Song, boo
 	}
 	defer rollback(tx)
 
-	id, err := songIDByKeyTx(ctx, tx, key)
+	id, err := songIDByCandidatesTx(ctx, tx, candidates)
 	created := false
 	if errors.Is(err, ErrNotFound) {
 		result, execErr := tx.ExecContext(ctx, `
 			INSERT INTO songs (
 				unique_key, title, artist, album, duration_ms, cover_hash,
-				first_played_at, last_played_at, play_count, created_at, updated_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
-		`, key, input.Title, input.Artist, input.Album, input.DurationMs, input.CoverHash, formatDBTime(now), formatDBTime(now), formatDBTime(now), formatDBTime(now))
+				first_played_at, last_played_at, play_count, fixed_lyric_source, created_at, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+		`, key, input.Title, input.Artist, input.Album, input.DurationMs, input.CoverHash, formatDBTime(now), formatDBTime(now), input.FixedLyricSource, formatDBTime(now), formatDBTime(now))
 		if execErr != nil {
 			return Song{}, false, execErr
 		}
@@ -92,10 +93,10 @@ func (r *Repository) RecordPlayback(ctx context.Context, input Input) (Song, boo
 	} else {
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE songs
-			SET title = ?, artist = ?, album = ?, duration_ms = ?, cover_hash = ?,
+			SET unique_key = ?, title = ?, artist = ?, album = ?, duration_ms = ?, cover_hash = ?,
 				last_played_at = ?, play_count = play_count + 1, updated_at = ?
 			WHERE id = ?
-		`, input.Title, input.Artist, input.Album, input.DurationMs, input.CoverHash, formatDBTime(now), formatDBTime(now), id); err != nil {
+		`, key, input.Title, input.Artist, input.Album, input.DurationMs, input.CoverHash, formatDBTime(now), formatDBTime(now), id); err != nil {
 			return Song{}, false, err
 		}
 	}
@@ -131,9 +132,9 @@ func (r *Repository) Create(ctx context.Context, input Input) (Song, error) {
 		result, execErr := tx.ExecContext(ctx, `
 			INSERT INTO songs (
 				unique_key, title, artist, album, duration_ms, cover_hash,
-				first_played_at, last_played_at, play_count, created_at, updated_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
-		`, key, input.Title, input.Artist, input.Album, input.DurationMs, input.CoverHash, formatDBTime(now), formatDBTime(now), formatDBTime(now), formatDBTime(now))
+				first_played_at, last_played_at, play_count, fixed_lyric_source, created_at, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+		`, key, input.Title, input.Artist, input.Album, input.DurationMs, input.CoverHash, formatDBTime(now), formatDBTime(now), input.FixedLyricSource, formatDBTime(now), formatDBTime(now))
 		if execErr != nil {
 			return Song{}, execErr
 		}
@@ -146,9 +147,9 @@ func (r *Repository) Create(ctx context.Context, input Input) (Song, error) {
 	} else {
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE songs
-			SET title = ?, artist = ?, album = ?, duration_ms = ?, cover_hash = ?, updated_at = ?
+			SET title = ?, artist = ?, album = ?, duration_ms = ?, cover_hash = ?, fixed_lyric_source = ?, updated_at = ?
 			WHERE id = ?
-		`, input.Title, input.Artist, input.Album, input.DurationMs, input.CoverHash, formatDBTime(now), id); err != nil {
+		`, input.Title, input.Artist, input.Album, input.DurationMs, input.CoverHash, input.FixedLyricSource, formatDBTime(now), id); err != nil {
 			return Song{}, err
 		}
 	}
@@ -176,9 +177,9 @@ func (r *Repository) Update(ctx context.Context, id int64, input Input) (Song, e
 	now := time.Now().UTC()
 	result, err := r.db.ExecContext(ctx, `
 		UPDATE songs
-		SET unique_key = ?, title = ?, artist = ?, album = ?, duration_ms = ?, cover_hash = ?, updated_at = ?
+		SET unique_key = ?, title = ?, artist = ?, album = ?, duration_ms = ?, cover_hash = ?, fixed_lyric_source = ?, updated_at = ?
 		WHERE id = ?
-	`, key, input.Title, input.Artist, input.Album, input.DurationMs, input.CoverHash, formatDBTime(now), id)
+	`, key, input.Title, input.Artist, input.Album, input.DurationMs, input.CoverHash, input.FixedLyricSource, formatDBTime(now), id)
 	if err != nil {
 		if isConstraintError(err) {
 			return Song{}, ErrDuplicateSong
@@ -219,6 +220,27 @@ func (r *Repository) Get(ctx context.Context, id int64) (Song, error) {
 	}
 	row := r.db.QueryRowContext(ctx, selectSongSQL()+` WHERE id = ?`, id)
 	return scanSong(row)
+}
+
+func (r *Repository) GetByInput(ctx context.Context, input Input) (Song, error) {
+	if r == nil || r.db == nil {
+		return Song{}, fmt.Errorf("song database is not available")
+	}
+	input = input.Clean()
+	if input.Title == "" {
+		return Song{}, ErrNotFound
+	}
+	for _, candidate := range inputKeyCandidates(input) {
+		row := r.db.QueryRowContext(ctx, selectSongSQL()+` WHERE unique_key = ?`, candidate.key)
+		got, err := scanSong(row)
+		if err == nil {
+			return got, nil
+		}
+		if !errors.Is(err, ErrNotFound) {
+			return Song{}, err
+		}
+	}
+	return Song{}, ErrNotFound
 }
 
 func (r *Repository) Recent(ctx context.Context, limit int) ([]Song, error) {
@@ -269,7 +291,7 @@ func (r *Repository) Lyrics(ctx context.Context, songID int64) ([]LyricSource, e
 		return nil, err
 	}
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT id, song_id, source, source_track_id, raw_lyric, ttml_lyric, available,
+		SELECT id, song_id, source, source_track_id, raw_lyric, ttml_lyric, delay_ms, available,
 			software_cleaned, ai_cleaned, has_translation, has_transliteration, updated_at
 		FROM lyric_sources
 		WHERE song_id = ?
@@ -278,6 +300,7 @@ func (r *Repository) Lyrics(ctx context.Context, songID int64) ([]LyricSource, e
 			WHEN 'qq' THEN 1
 			WHEN 'kugou' THEN 2
 			WHEN 'netease' THEN 3
+			WHEN 'custom' THEN 4
 			ELSE 9
 		END
 	`, songID)
@@ -335,6 +358,27 @@ func (r *Repository) SetLyricWithMeta(ctx context.Context, songID int64, source 
 			updated_at = excluded.updated_at
 	`, songID, source, sourceTrackID, rawLyric, normalized.TTML, boolInt(normalized.Available),
 		boolInt(normalized.HasTranslation), boolInt(normalized.HasTransliteration), formatDBTime(now))
+	return err
+}
+
+func (r *Repository) SetLyricDelay(ctx context.Context, songID int64, source string, delayMs int64) error {
+	if r == nil || r.db == nil {
+		return fmt.Errorf("song database is not available")
+	}
+	if !validSource(source) {
+		return fmt.Errorf("%w: invalid lyric source %q", ErrInvalidInput, source)
+	}
+	if _, err := r.Get(ctx, songID); err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO lyric_sources (song_id, source, delay_ms, updated_at)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(song_id, source) DO UPDATE SET
+			delay_ms = excluded.delay_ms,
+			updated_at = excluded.updated_at
+	`, songID, source, delayMs, formatDBTime(now))
 	return err
 }
 
@@ -398,6 +442,7 @@ func (r *Repository) migrate(ctx context.Context) error {
 			first_played_at TEXT NOT NULL,
 			last_played_at TEXT NOT NULL,
 			play_count INTEGER NOT NULL DEFAULT 0,
+			fixed_lyric_source TEXT NOT NULL DEFAULT '',
 			applied_lyric_source TEXT NOT NULL DEFAULT '',
 			applied_lyric_id INTEGER,
 			created_at TEXT NOT NULL,
@@ -412,6 +457,7 @@ func (r *Repository) migrate(ctx context.Context) error {
 			source_track_id TEXT NOT NULL DEFAULT '',
 			raw_lyric TEXT NOT NULL DEFAULT '',
 			ttml_lyric TEXT NOT NULL DEFAULT '',
+			delay_ms INTEGER NOT NULL DEFAULT 0,
 			available INTEGER NOT NULL DEFAULT 0,
 			software_cleaned INTEGER NOT NULL DEFAULT 0,
 			ai_cleaned INTEGER NOT NULL DEFAULT 0,
@@ -429,10 +475,86 @@ func (r *Repository) migrate(ctx context.Context) error {
 			return err
 		}
 	}
+	if err := r.ensureSchema(ctx); err != nil {
+		return err
+	}
 	if err := r.normalizeSongKeys(ctx); err != nil {
 		return err
 	}
+	if err := r.ensureAllLyricSlots(ctx); err != nil {
+		return err
+	}
 	return r.normalizeStoredLyrics(ctx)
+}
+
+func (r *Repository) ensureSchema(ctx context.Context) error {
+	if err := r.ensureColumn(ctx, "songs", "fixed_lyric_source", `TEXT NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+	if err := r.ensureColumn(ctx, "lyric_sources", "delay_ms", `INTEGER NOT NULL DEFAULT 0`); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (r *Repository) ensureColumn(ctx context.Context, table string, column string, definition string) error {
+	rows, err := r.db.QueryContext(ctx, `PRAGMA table_info(`+table+`)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name string
+		var typ string
+		var notNull int
+		var defaultValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
+			return err
+		}
+		if strings.EqualFold(name, column) {
+			return rows.Err()
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = r.db.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN `+column+` `+definition)
+	return err
+}
+
+func (r *Repository) ensureAllLyricSlots(ctx context.Context) error {
+	rows, err := r.db.QueryContext(ctx, `SELECT id FROM songs`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer rollback(tx)
+	for _, id := range ids {
+		if err := ensureLyricSlotsTx(ctx, tx, id); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (r *Repository) normalizeStoredLyrics(ctx context.Context) error {
@@ -484,7 +606,7 @@ func (r *Repository) normalizeSongKeys(ctx context.Context) error {
 	}
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, unique_key, title, artist, album, duration_ms, cover_hash,
-			first_played_at, last_played_at, play_count
+			first_played_at, last_played_at, play_count, fixed_lyric_source
 		FROM songs
 		ORDER BY last_played_at DESC, id DESC
 	`)
@@ -504,6 +626,7 @@ func (r *Repository) normalizeSongKeys(ctx context.Context) error {
 		firstPlayed   time.Time
 		lastPlayed    time.Time
 		playCount     int
+		fixedSource   string
 		normalizedKey string
 	}
 	groups := map[string][]row{}
@@ -512,16 +635,22 @@ func (r *Repository) normalizeSongKeys(ctx context.Context) error {
 		var firstPlayed, lastPlayed string
 		if err := rows.Scan(
 			&item.id, &item.key, &item.title, &item.artist, &item.album, &item.durationMs,
-			&item.coverHash, &firstPlayed, &lastPlayed, &item.playCount,
+			&item.coverHash, &firstPlayed, &lastPlayed, &item.playCount, &item.fixedSource,
 		); err != nil {
 			return err
 		}
 		item.firstPlayed = parseDBTime(firstPlayed)
 		item.lastPlayed = parseDBTime(lastPlayed)
-		item.normalizedKey = UniqueKey(Input{
+		candidates := inputKeyCandidates(Input{
 			Title:  item.title,
 			Artist: item.artist,
+			Album:  item.album,
 		})
+		if len(candidates) == 0 {
+			item.normalizedKey = UniqueKey(Input{Title: item.title, Artist: item.artist})
+		} else {
+			item.normalizedKey = candidates[0].key
+		}
 		groups[item.normalizedKey] = append(groups[item.normalizedKey], item)
 	}
 	if err := rows.Err(); err != nil {
@@ -545,6 +674,8 @@ func (r *Repository) normalizeSongKeys(ctx context.Context) error {
 		playCount := 0
 		duration := target.durationMs
 		coverHash := target.coverHash
+		fixedSource := target.fixedSource
+		normalizedInput := normalizedStoredInput(target.title, target.artist, target.album)
 
 		for _, item := range items {
 			if firstPlayed.IsZero() || (!item.firstPlayed.IsZero() && item.firstPlayed.Before(firstPlayed)) {
@@ -560,14 +691,18 @@ func (r *Repository) normalizeSongKeys(ctx context.Context) error {
 			if strings.TrimSpace(coverHash) == "" && strings.TrimSpace(item.coverHash) != "" {
 				coverHash = item.coverHash
 			}
+			if strings.TrimSpace(fixedSource) == "" && strings.TrimSpace(item.fixedSource) != "" {
+				fixedSource = item.fixedSource
+			}
 		}
 
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE songs
-			SET unique_key = ?, duration_ms = ?, cover_hash = ?, first_played_at = ?,
-				last_played_at = ?, play_count = ?, updated_at = ?
+			SET unique_key = ?, title = ?, artist = ?, album = ?, duration_ms = ?, cover_hash = ?, first_played_at = ?,
+				last_played_at = ?, play_count = ?, fixed_lyric_source = ?, updated_at = ?
 			WHERE id = ?
-		`, key, duration, coverHash, formatDBTime(firstPlayed), formatDBTime(lastPlayed), playCount, now, target.id); err != nil {
+		`, key, normalizedInput.Title, normalizedInput.Artist, normalizedInput.Album, duration, coverHash,
+			formatDBTime(firstPlayed), formatDBTime(lastPlayed), playCount, fixedSource, now, target.id); err != nil {
 			return err
 		}
 
@@ -584,9 +719,21 @@ func (r *Repository) normalizeSongKeys(ctx context.Context) error {
 	return tx.Commit()
 }
 
+func normalizedStoredInput(title string, artist string, album string) Input {
+	candidates := inputKeyCandidates(Input{
+		Title:  title,
+		Artist: artist,
+		Album:  album,
+	})
+	if len(candidates) > 0 {
+		return candidates[0].input
+	}
+	return Input{Title: title, Artist: artist, Album: album}.Clean()
+}
+
 func mergeLyricSourcesTx(ctx context.Context, tx *sql.Tx, targetID, duplicateID int64) error {
 	rows, err := tx.QueryContext(ctx, `
-		SELECT source, source_track_id, raw_lyric, ttml_lyric, available,
+		SELECT source, source_track_id, raw_lyric, ttml_lyric, delay_ms, available,
 			software_cleaned, ai_cleaned, has_translation, has_transliteration, updated_at
 		FROM lyric_sources
 		WHERE song_id = ?
@@ -601,6 +748,7 @@ func mergeLyricSourcesTx(ctx context.Context, tx *sql.Tx, targetID, duplicateID 
 		sourceTrackID      string
 		rawLyric           string
 		ttmlLyric          string
+		delayMs            int64
 		available          int
 		softwareCleaned    int
 		aiCleaned          int
@@ -611,7 +759,7 @@ func mergeLyricSourcesTx(ctx context.Context, tx *sql.Tx, targetID, duplicateID 
 	for rows.Next() {
 		var item lyricRow
 		if err := rows.Scan(
-			&item.source, &item.sourceTrackID, &item.rawLyric, &item.ttmlLyric, &item.available,
+			&item.source, &item.sourceTrackID, &item.rawLyric, &item.ttmlLyric, &item.delayMs, &item.available,
 			&item.softwareCleaned, &item.aiCleaned, &item.hasTranslation, &item.hasTransliteration, &item.updatedAt,
 		); err != nil {
 			return err
@@ -621,9 +769,9 @@ func mergeLyricSourcesTx(ctx context.Context, tx *sql.Tx, targetID, duplicateID 
 		}
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO lyric_sources (
-				song_id, source, source_track_id, raw_lyric, ttml_lyric, available,
+				song_id, source, source_track_id, raw_lyric, ttml_lyric, delay_ms, available,
 				software_cleaned, ai_cleaned, has_translation, has_transliteration, updated_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(song_id, source) DO UPDATE SET
 				source_track_id = CASE
 					WHEN lyric_sources.source_track_id = '' THEN excluded.source_track_id
@@ -637,6 +785,10 @@ func mergeLyricSourcesTx(ctx context.Context, tx *sql.Tx, targetID, duplicateID 
 					WHEN lyric_sources.ttml_lyric = '' THEN excluded.ttml_lyric
 					ELSE lyric_sources.ttml_lyric
 				END,
+				delay_ms = CASE
+					WHEN lyric_sources.delay_ms = 0 THEN excluded.delay_ms
+					ELSE lyric_sources.delay_ms
+				END,
 				available = max(lyric_sources.available, excluded.available),
 				software_cleaned = max(lyric_sources.software_cleaned, excluded.software_cleaned),
 				ai_cleaned = max(lyric_sources.ai_cleaned, excluded.ai_cleaned),
@@ -646,7 +798,7 @@ func mergeLyricSourcesTx(ctx context.Context, tx *sql.Tx, targetID, duplicateID 
 					WHEN lyric_sources.updated_at > excluded.updated_at THEN lyric_sources.updated_at
 					ELSE excluded.updated_at
 				END
-		`, targetID, item.source, item.sourceTrackID, item.rawLyric, item.ttmlLyric, item.available,
+		`, targetID, item.source, item.sourceTrackID, item.rawLyric, item.ttmlLyric, item.delayMs, item.available,
 			item.softwareCleaned, item.aiCleaned, item.hasTranslation, item.hasTransliteration, item.updatedAt); err != nil {
 			return err
 		}
@@ -676,9 +828,22 @@ func songIDByKeyTx(ctx context.Context, tx *sql.Tx, key string) (int64, error) {
 	return id, err
 }
 
+func songIDByCandidatesTx(ctx context.Context, tx *sql.Tx, candidates []inputKeyCandidate) (int64, error) {
+	for _, candidate := range candidates {
+		id, err := songIDByKeyTx(ctx, tx, candidate.key)
+		if err == nil {
+			return id, nil
+		}
+		if !errors.Is(err, ErrNotFound) {
+			return 0, err
+		}
+	}
+	return 0, ErrNotFound
+}
+
 func selectSongSQL() string {
 	return `SELECT id, unique_key, title, artist, album, duration_ms, cover_hash,
-		first_played_at, last_played_at, play_count, applied_lyric_source,
+		first_played_at, last_played_at, play_count, fixed_lyric_source, applied_lyric_source,
 		applied_lyric_id, created_at, updated_at FROM songs`
 }
 
@@ -692,7 +857,7 @@ func scanSong(row rowScanner) (Song, error) {
 	var appliedID sql.NullInt64
 	err := row.Scan(
 		&s.ID, &s.UniqueKey, &s.Title, &s.Artist, &s.Album, &s.DurationMs, &s.CoverHash,
-		&firstPlayed, &lastPlayed, &s.PlayCount, &s.AppliedLyricSource,
+		&firstPlayed, &lastPlayed, &s.PlayCount, &s.FixedLyricSource, &s.AppliedLyricSource,
 		&appliedID, &created, &updated,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -728,7 +893,7 @@ func scanLyric(rows *sql.Rows) (LyricSource, error) {
 	var updated string
 	var available, softwareCleaned, aiCleaned, hasTranslation, hasTransliteration int
 	err := rows.Scan(
-		&l.ID, &l.SongID, &l.Source, &l.SourceTrackID, &l.RawLyric, &l.TTMLLyric, &available,
+		&l.ID, &l.SongID, &l.Source, &l.SourceTrackID, &l.RawLyric, &l.TTMLLyric, &l.DelayMs, &available,
 		&softwareCleaned, &aiCleaned, &hasTranslation, &hasTransliteration, &updated,
 	)
 	if err != nil {

@@ -74,7 +74,7 @@ func Pong() Message {
 func SnapshotMessages(snapshot model.Snapshot) []Message {
 	messages := []Message{
 		SetMusic(snapshot.Track),
-		Progress(snapshot.Playback),
+		ProgressWithLyricDelay(snapshot.Playback, snapshot.Lyrics.DelayMs),
 		Volume(snapshot.Playback),
 	}
 	if strings.TrimSpace(snapshot.Lyrics.TTML) != "" &&
@@ -91,6 +91,10 @@ func SnapshotMessages(snapshot model.Snapshot) []Message {
 }
 
 func EventMessages(event model.Event) []Message {
+	return EventMessagesWithLyricDelay(event, 0)
+}
+
+func EventMessagesWithLyricDelay(event model.Event, delayMs int64) []Message {
 	switch event.Type {
 	case "track_changed":
 		if track, ok := event.Payload.(model.Track); ok {
@@ -98,7 +102,7 @@ func EventMessages(event model.Event) []Message {
 		}
 	case "playback_changed":
 		if playback, ok := event.Payload.(model.Playback); ok {
-			messages := []Message{Progress(playback), Volume(playback)}
+			messages := []Message{ProgressWithLyricDelay(playback, delayMs), Volume(playback)}
 			switch playback.State {
 			case "playing":
 				messages = append(messages, stateMessage(StateUpdate{Update: "resumed"}))
@@ -134,9 +138,13 @@ func SetMusic(track model.Track) Message {
 }
 
 func Progress(playback model.Playback) Message {
+	return ProgressWithLyricDelay(playback, 0)
+}
+
+func ProgressWithLyricDelay(playback model.Playback, delayMs int64) Message {
 	return stateMessage(ProgressUpdate{
 		Update:   "progress",
-		Progress: uint64(maxInt64(playback.Position, 0)),
+		Progress: uint64(maxInt64(playback.Position-delayMs, 0)),
 	})
 }
 

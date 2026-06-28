@@ -73,10 +73,29 @@ func (s *SearchService) SearchAll(ctx context.Context, query TrackQuery, cfg mod
 			out.Results = append(out.Results, run.result)
 		}
 	}
+	out.Results = filterConfirmedResults(out.Results)
 	if updatedAt := ttmlDB.LastUpdatedAt(); !updatedAt.IsZero() {
 		out.TTMLDBUpdatedAt = updatedAt
 	}
 	out.TTMLDBEntryCount = ttmlDB.EntryCount()
+	return out
+}
+
+func filterConfirmedResults(results []ProviderResult) []ProviderResult {
+	hasPlatformResult := false
+	for _, result := range results {
+		switch result.Source {
+		case model.LyricSourceQQ, model.LyricSourceKugou, model.LyricSourceNetease:
+			hasPlatformResult = true
+		}
+	}
+	out := make([]ProviderResult, 0, len(results))
+	for _, result := range results {
+		if result.Source == model.LyricSourceTTMLDB && !hasPlatformResult {
+			continue
+		}
+		out = append(out, result)
+	}
 	return out
 }
 

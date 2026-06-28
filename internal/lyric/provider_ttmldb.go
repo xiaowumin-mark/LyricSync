@@ -179,7 +179,7 @@ func (p *ttmlDBProvider) bestEntry(query TrackQuery) (ttmlDBEntry, int, bool) {
 	for i := len(p.entries) - 1; i >= 0; i-- {
 		entry := p.entries[i]
 		score := entry.matchScore(query)
-		if score < 30 {
+		if score < 74 {
 			continue
 		}
 		key := entry.dedupKey()

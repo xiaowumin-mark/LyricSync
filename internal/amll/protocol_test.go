@@ -72,6 +72,26 @@ func TestSetLyricTTMLJSONMatchesAMLLV2Shape(t *testing.T) {
 	}
 }
 
+func TestProgressWithLyricDelayOffsetsPlaybackPosition(t *testing.T) {
+	data, err := json.Marshal(ProgressWithLyricDelay(model.Playback{Position: 5000}, 1200))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"type":"state","value":{"update":"progress","progress":3800}}`
+	if string(data) != want {
+		t.Fatalf("unexpected JSON:\n%s\nwant:\n%s", data, want)
+	}
+
+	data, err = json.Marshal(ProgressWithLyricDelay(model.Playback{Position: 500}, 1200))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = `{"type":"state","value":{"update":"progress","progress":0}}`
+	if string(data) != want {
+		t.Fatalf("unexpected clamped JSON:\n%s\nwant:\n%s", data, want)
+	}
+}
+
 func TestSnapshotMessagesIncludeCurrentLyric(t *testing.T) {
 	messages := SnapshotMessages(model.Snapshot{
 		Track: model.Track{ID: "track-1"},

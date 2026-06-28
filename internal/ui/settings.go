@@ -375,6 +375,7 @@ func lyricSourceOptions() []flux.SelectOptionItem[string] {
 		{Label: "QQ 音乐", Value: model.LyricSourceQQ},
 		{Label: "酷狗音乐", Value: model.LyricSourceKugou},
 		{Label: "网易云音乐", Value: model.LyricSourceNetease},
+		{Label: "自定义歌词", Value: model.LyricSourceCustom},
 	}
 }
 
@@ -388,6 +389,8 @@ func lyricSourceLabel(source string) string {
 		return "酷狗音乐"
 	case model.LyricSourceNetease:
 		return "网易云音乐"
+	case model.LyricSourceCustom:
+		return "自定义歌词"
 	default:
 		return source
 	}
@@ -403,6 +406,8 @@ func lyricSourceDescription(source string) string {
 		return "酷狗音乐歌词来源"
 	case model.LyricSourceNetease:
 		return "网易云音乐歌词来源"
+	case model.LyricSourceCustom:
+		return "歌曲数据库中的自定义 TTML 歌词"
 	default:
 		return "歌词来源"
 	}
@@ -438,12 +443,14 @@ func completeLyricPriority(values []string) []string {
 		model.LyricSourceQQ,
 		model.LyricSourceKugou,
 		model.LyricSourceNetease,
+		model.LyricSourceCustom,
 	}
 	allowed := map[string]struct{}{
 		model.LyricSourceTTMLDB:  {},
 		model.LyricSourceQQ:      {},
 		model.LyricSourceKugou:   {},
 		model.LyricSourceNetease: {},
+		model.LyricSourceCustom:  {},
 	}
 	seen := map[string]struct{}{}
 	out := make([]string, 0, len(defaults))

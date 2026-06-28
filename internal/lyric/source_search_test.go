@@ -1,6 +1,7 @@
 package lyric
 
 import (
+	"encoding/base64"
 	"testing"
 
 	musicapi "github.com/xiaowumin-mark/AMLX-MUSIC-API"
@@ -43,6 +44,21 @@ func TestDocumentFromAMLXLyricMergesAuxiliaryLines(t *testing.T) {
 	}
 	if !doc.HasWordTimeline() {
 		t.Fatalf("expected word timeline from AMLX syllables")
+	}
+}
+
+func TestDocumentFromAMLXLyricParsesPlatformRawWhenLinesMissing(t *testing.T) {
+	payload := `{"content":[{"lyricContent":[["hello world"]],"type":1}]}`
+	raw := "[language:" + base64.StdEncoding.EncodeToString([]byte(payload)) + "]\n[1000,1200]<0,500,0>你<500,700,0>好"
+	doc := documentFromAMLXLyric(&musicapi.Lyric{Raw: raw}, metadataForResult("Demo", "Artist", "", model.LyricSourceKugou, "hash"))
+	if !IsUsable(doc) || len(doc.Lines) != 1 {
+		t.Fatalf("expected raw KRC to produce usable document, got %#v", doc)
+	}
+	if got := doc.Lines[0].TranslatedLyric; got != "hello world" {
+		t.Fatalf("translation = %q", got)
+	}
+	if !doc.HasWordTimeline() {
+		t.Fatalf("expected word timeline from raw KRC: %#v", doc)
 	}
 }
 

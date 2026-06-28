@@ -163,6 +163,17 @@ func (r *Runtime) GetSong(ctx context.Context, id int64) (song.Song, error) {
 	return r.songs.Get(ctx, id)
 }
 
+func (r *Runtime) CurrentSong(ctx context.Context) (song.Song, error) {
+	if r.songs == nil {
+		return song.Song{}, errors.New("song database is not available")
+	}
+	input := song.InputFromTrack(r.store.Snapshot().Track)
+	if !input.Recordable() {
+		return song.Song{}, song.ErrUnrecordable
+	}
+	return r.songs.GetByInput(ctx, input)
+}
+
 func (r *Runtime) CreateSong(ctx context.Context, input song.Input) (song.Song, error) {
 	if r.songs == nil {
 		return song.Song{}, errors.New("song database is not available")
@@ -173,6 +184,7 @@ func (r *Runtime) CreateSong(ctx context.Context, input song.Input) (song.Song, 
 	}
 	r.store.AddLog("Song saved: " + created.Title)
 	r.store.Notify("songs_changed", created.ID)
+	r.refreshLyricsForCurrentSong(ctx, created)
 	return created, nil
 }
 
@@ -186,6 +198,7 @@ func (r *Runtime) UpdateSong(ctx context.Context, id int64, input song.Input) (s
 	}
 	r.store.AddLog("Song updated: " + updated.Title)
 	r.store.Notify("songs_changed", updated.ID)
+	r.refreshLyricsForCurrentSong(ctx, updated)
 	return updated, nil
 }
 
@@ -220,6 +233,27 @@ func (r *Runtime) SetSongLyric(ctx context.Context, songID int64, source string,
 	}
 	r.store.Notify("songs_changed", songID)
 	return nil
+}
+
+func (r *Runtime) SetSongLyricDelay(ctx context.Context, songID int64, source string, delayMs int64) error {
+	if r.songs == nil {
+		return errors.New("song database is not available")
+	}
+	if err := r.songs.SetLyricDelay(ctx, songID, source, delayMs); err != nil {
+		return err
+	}
+	if current, err := r.songs.Get(ctx, songID); err == nil && r.isCurrentSong(current) {
+		r.publishBestLyricForSong(ctx, current, r.store.Snapshot().Track)
+	}
+	r.store.Notify("songs_changed", songID)
+	return nil
+}
+
+func (r *Runtime) refreshLyricsForCurrentSong(ctx context.Context, item song.Song) {
+	if item.ID <= 0 || !r.isCurrentSong(item) {
+		return
+	}
+	r.publishBestLyricForSong(ctx, item, r.store.Snapshot().Track)
 }
 
 func (r *Runtime) UpdateTTMLDBIndex(ctx context.Context) error {
@@ -319,7 +353,7 @@ func (r *Runtime) publishBestLyricForSong(ctx context.Context, item song.Song, t
 		r.store.SetLyrics(model.CurrentLyrics{TrackID: track.ID, UpdatedAt: model.Now()})
 		return false
 	}
-	selected, ok := selectBestLyric(lyrics, r.store.Config().Lyrics.SearchPriority)
+	selected, ok := selectBestLyric(lyrics, lyricPriorityForSong(item, r.store.Config().Lyrics.SearchPriority))
 	if !ok {
 		r.store.SetLyrics(model.CurrentLyrics{TrackID: track.ID, UpdatedAt: model.Now()})
 		return false
@@ -342,6 +376,7 @@ func (r *Runtime) publishBestLyricForSong(ctx context.Context, item song.Song, t
 		Source:    selected.Source,
 		Lines:     currentLyricLines(document),
 		TTML:      ttmlText,
+		DelayMs:   selected.DelayMs,
 		UpdatedAt: model.Now(),
 	})
 	return true
@@ -398,7 +433,7 @@ func (r *Runtime) startLyricSearch(parent context.Context, item song.Song, track
 			r.store.Notify("songs_changed", item.ID)
 			return
 		}
-		selected, ok := lyric.SelectBestResult(result.Results, cfg.Lyrics.SearchPriority)
+		selected, ok := lyric.SelectBestResult(result.Results, lyricPriorityForSong(item, cfg.Lyrics.SearchPriority))
 		if ok {
 			if err := r.songs.ApplyLyricSource(ctx, item.ID, selected.Source); err != nil && !errors.Is(err, song.ErrNotFound) {
 				r.store.AddLog("Lyric apply failed: " + err.Error())
@@ -455,16 +490,53 @@ func selectBestLyric(lyrics []song.LyricSource, priority []string) (song.LyricSo
 	return song.LyricSource{}, false
 }
 
+func lyricPriorityForSong(item song.Song, configured []string) []string {
+	if strings.TrimSpace(item.FixedLyricSource) != "" {
+		return []string{item.FixedLyricSource}
+	}
+	priority := make([]string, 0, len(configured)+len(song.LyricSources))
+	seen := map[string]struct{}{}
+	add := func(source string) {
+		source = strings.TrimSpace(source)
+		if source == "" {
+			return
+		}
+		if _, ok := seen[source]; ok {
+			return
+		}
+		for _, allowed := range song.LyricSources {
+			if source == allowed {
+				seen[source] = struct{}{}
+				priority = append(priority, source)
+				return
+			}
+		}
+	}
+	for _, source := range configured {
+		add(source)
+	}
+	for _, source := range []string{song.SourceTTMLDB, song.SourceQQ, song.SourceKugou, song.SourceNetease, song.SourceCustom} {
+		add(source)
+	}
+	return priority
+}
+
 func currentLyricLines(document lyric.Document) []model.CurrentLyricLine {
-	previews := lyric.PreviewLines(document, len(document.Lines))
-	out := make([]model.CurrentLyricLine, 0, len(previews))
-	for _, line := range previews {
+	document = document.Normalized()
+	out := make([]model.CurrentLyricLine, 0, len(document.Lines))
+	for _, line := range document.Lines {
+		text := strings.TrimSpace(line.Text())
+		if text == "" {
+			continue
+		}
 		out = append(out, model.CurrentLyricLine{
 			StartTimeMs: line.StartTimeMs,
 			EndTimeMs:   line.EndTimeMs,
-			Text:        line.Text,
-			Translation: line.Translation,
-			Roman:       line.Roman,
+			Text:        text,
+			Translation: strings.TrimSpace(line.TranslatedLyric),
+			Roman:       strings.TrimSpace(line.RomanLyric),
+			Background:  line.IsBackground,
+			Duet:        line.IsDuet,
 		})
 	}
 	return out

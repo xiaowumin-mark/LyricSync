@@ -32,6 +32,7 @@ const (
 	LyricSourceQQ      = "qq"
 	LyricSourceKugou   = "kugou"
 	LyricSourceNetease = "netease"
+	LyricSourceCustom  = "custom"
 
 	CloseBehaviorExit = "exit"
 	CloseBehaviorTray = "tray"
@@ -134,6 +135,8 @@ type CurrentLyricLine struct {
 	Text        string `json:"text"`
 	Translation string `json:"translation,omitempty"`
 	Roman       string `json:"roman,omitempty"`
+	Background  bool   `json:"background,omitempty"`
+	Duet        bool   `json:"duet,omitempty"`
 }
 
 type CurrentLyrics struct {
@@ -141,6 +144,7 @@ type CurrentLyrics struct {
 	Source    string             `json:"source,omitempty"`
 	Lines     []CurrentLyricLine `json:"lines"`
 	TTML      string             `json:"-"`
+	DelayMs   int64              `json:"delayMs,omitempty"`
 	UpdatedAt string             `json:"updatedAt,omitempty"`
 }
 

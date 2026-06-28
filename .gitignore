@@ -10,3 +10,7 @@ frontend/package.json.md5
 frontend/dist/*
 !frontend/dist/
 !frontend/dist/gitkeep
+
+
+*.exe
+*.syso

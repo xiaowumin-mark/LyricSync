@@ -1,13 +1,16 @@
 package ui
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"image/color"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+	"sync"
 
 	flux "github.com/xiaowumin-mark/FluxUI/ui"
 
@@ -20,6 +23,8 @@ const (
 	waveformBarCount      = 44
 	waveformHeight        = float32(112)
 	waveformContentHeight = float32(92)
+	dashboardLyricAfter   = 8
+	dashboardLyricHeight  = float32(520)
 )
 
 func dashboardPage(colors palette, snapshot model.Snapshot, notice stringState, runtime *app.Runtime, compact bool, waveform []float64) flux.Element {
@@ -44,7 +49,7 @@ func dashboardPage(colors palette, snapshot model.Snapshot, notice stringState, 
 	return flux.RowElement(
 		flux.ExpandedElement(flux.ScrollViewElement(main, flux.ScrollVertical(true))),
 		flux.HSpacerElement(12),
-		flux.FixedWidthElement(360, flux.ScrollViewElement(side, flux.ScrollVertical(true))),
+		flux.FixedWidthElement(360, side),
 	)
 }
 
@@ -88,7 +93,11 @@ func nowPlayingDetails(colors palette, snapshot model.Snapshot, notice stringSta
 		flux.VSpacerElement(18),
 		playbackProgressBlock(colors, track, playback),
 		flux.VSpacerElement(16),
-		playbackControls(colors, snapshot, notice, runtime),
+		flux.RowElement(
+			playbackControls(colors, snapshot, notice, runtime),
+			flux.ExpandedElement(flux.SpacerElement(0, 0)),
+			currentSongDetailButton(colors, notice, runtime),
+		),
 	)
 }
 
@@ -158,6 +167,29 @@ func playbackControls(colors palette, snapshot model.Snapshot, notice stringStat
 	)
 }
 
+func currentSongDetailButton(colors palette, notice stringState, runtime *app.Runtime) flux.Element {
+	return flux.TooltipElement(
+		"查看当前歌曲详情",
+		flux.FilledTonalIconButtonElement(
+			flux.IconElement("pageview", flux.IconSize(22)),
+			flux.IconButtonSize(44),
+			flux.IconButtonDisabled(runtime == nil),
+			flux.IconButtonOnClick(func(ctx *flux.Context) {
+				if runtime == nil {
+					notice.Set("歌曲数据库不可用")
+					return
+				}
+				current, err := runtime.CurrentSong(context.Background())
+				if err != nil {
+					notice.Set("当前歌曲还没有可查看的记录")
+					return
+				}
+				flux.Navigate(ctx, fmt.Sprintf("/songs/%d", current.ID), flux.WithNavTransition(flux.TransitionSlideLeft))
+			}),
+		),
+	)
+}
+
 func mediaControlButton(colors palette, tooltip string, icon string, enabled bool, command string, notice stringState, runtime *app.Runtime) flux.Element {
 	return flux.TooltipElement(
 		tooltip,
@@ -214,94 +246,195 @@ func volumeDecoration(colors palette, volume float64) flux.Element {
 
 func currentLyricPanel(colors palette, snapshot model.Snapshot) flux.Element {
 	if isIdleTrack(snapshot.Track) {
-		return lyricBox(colors, "等待播放", "", "")
-	}
-	line, ok := currentSnapshotLyric(snapshot)
-	if !ok {
-		return lyricBox(colors, "暂无歌词", "", "")
-	}
-	return lyricBox(colors, line.Text, line.Translation, line.Roman)
-}
-
-func lyricBox(colors palette, text, translation, roman string) flux.Element {
-	children := []flux.Element{
-		flux.TextElement(text, flux.TextSize(18), flux.TextColor(colors.text), flux.TextAlign(flux.AlignCenter)),
-	}
-	if strings.TrimSpace(translation) != "" {
-		children = append(children,
-			flux.VSpacerElement(8),
-			flux.TextElement(translation, flux.TextSize(13), flux.TextColor(colors.subtle), flux.TextAlign(flux.AlignCenter)),
+		return panel(colors,
+			sectionTitle(colors, "当前歌词"),
+			flux.VSpacerElement(12),
+			emptyBox(colors, "等待播放"),
 		)
 	}
-	if strings.TrimSpace(roman) != "" {
-		children = append(children,
-			flux.VSpacerElement(6),
-			flux.TextElement(roman, flux.TextSize(12), flux.TextColor(colors.subtle), flux.TextAlign(flux.AlignCenter)),
+	if snapshot.Lyrics.TrackID != "" && snapshot.Lyrics.TrackID != snapshot.Track.ID {
+		return panel(colors,
+			sectionTitle(colors, "当前歌词"),
+			flux.VSpacerElement(12),
+			emptyBox(colors, "等待歌词同步"),
 		)
 	}
-	return panel(colors,
+	if len(snapshot.Lyrics.Lines) == 0 {
+		return panel(colors,
+			sectionTitle(colors, "当前歌词"),
+			flux.VSpacerElement(12),
+			emptyBox(colors, "暂无歌词"),
+		)
+	}
+	rows := []flux.Element{
 		sectionTitle(colors, "当前歌词"),
 		flux.VSpacerElement(12),
-		flux.FixedHeightElement(
-			128,
-			flux.ContainerDecorationElement(
-				flux.Bg(colors.muted).WithPad(flux.All(14)).WithRad(8),
-				flux.CenterElement(flux.ColumnElement(children...)),
-			),
+	}
+	start, end := dashboardLyricRange(snapshot.Lyrics.Lines, snapshot.Playback.Position)
+	visibleCount := end - start
+	rows = append(rows, flux.FixedHeightElement(
+		dashboardLyricHeight,
+		flux.ListViewElement(
+			visibleCount,
+			func(ctx *flux.Context, index int) flux.Element {
+				actual := start + index
+				if index < 0 || index >= visibleCount || actual < 0 || actual >= len(snapshot.Lyrics.Lines) {
+					return flux.SpacerElement(0, 0)
+				}
+				line := snapshot.Lyrics.Lines[actual]
+				return flux.Key(fmt.Sprintf("dashboard-lyric-%d-%d", actual, line.StartTimeMs),
+					dashboardLyricLine(colors, line, lyricLineActive(line, snapshot.Playback.Position)),
+				)
+			},
+			flux.ListVirtualized(true),
+			flux.ListItemSpacing(8),
+			flux.ListPadding(flux.All(2)),
+			flux.ListDecoration(flux.Bg(colors.surface)),
 		),
+	))
+	return panel(colors, rows...)
+}
+
+func dashboardLyricRange(lines []model.CurrentLyricLine, position int64) (int, int) {
+	if len(lines) <= dashboardLyricAfter+2 {
+		return 0, len(lines)
+	}
+	activeStart, activeEnd := dashboardLyricActiveRange(lines, position)
+	start := activeStart - 1
+	if start < 0 {
+		start = 0
+	}
+	end := activeEnd + dashboardLyricAfter
+	if end > len(lines) {
+		end = len(lines)
+	}
+	return start, end
+}
+
+func dashboardLyricActiveRange(lines []model.CurrentLyricLine, position int64) (int, int) {
+	candidate := dashboardLyricCandidateIndex(lines, position)
+	if candidate < 0 {
+		return 0, 1
+	}
+	activeStart := -1
+	activeEnd := -1
+	for i, checked := candidate, 0; i >= 0 && checked < 64; i, checked = i-1, checked+1 {
+		if lyricLineActive(lines[i], position) {
+			activeStart = i
+			if activeEnd < 0 {
+				activeEnd = i + 1
+			}
+			continue
+		}
+		if activeStart >= 0 && lines[i].EndTimeMs <= position {
+			break
+		}
+	}
+	for i := candidate + 1; i < len(lines); i++ {
+		if lines[i].StartTimeMs > position {
+			break
+		}
+		if !lyricLineActive(lines[i], position) {
+			continue
+		}
+		if activeStart < 0 {
+			activeStart = i
+		}
+		activeEnd = i + 1
+	}
+	if activeStart >= 0 {
+		return activeStart, activeEnd
+	}
+	return candidate, candidate + 1
+}
+
+func dashboardLyricCandidateIndex(lines []model.CurrentLyricLine, position int64) int {
+	return sort.Search(len(lines), func(i int) bool {
+		return lines[i].StartTimeMs > position
+	}) - 1
+}
+
+func dashboardLyricLine(colors palette, line model.CurrentLyricLine, active bool) flux.Element {
+	align := flux.AlignStart
+	if line.Duet {
+		align = flux.AlignEnd
+	}
+	textColor := colors.subtle
+	subColor := colors.subtle
+	bg := colors.surface
+	if active {
+		textColor = colors.primary
+		subColor = colors.text
+		bg = colors.primaryContainer
+	}
+	size := float32(15)
+	if line.Background {
+		size = 12
+	}
+	children := []flux.Element{
+		flux.TextElement(line.Text, flux.TextSize(size), flux.TextColor(textColor), flux.TextAlign(align)),
+	}
+	if line.Translation != "" {
+		children = append(children, flux.VSpacerElement(5), flux.TextElement(line.Translation, flux.TextSize(12), flux.TextColor(subColor), flux.TextAlign(align)))
+	}
+	if line.Roman != "" {
+		children = append(children, flux.VSpacerElement(4), flux.TextElement(line.Roman, flux.TextSize(11), flux.TextColor(subColor), flux.TextAlign(align)))
+	}
+	return flux.ContainerDecorationElement(
+		flux.Bg(bg).WithPad(flux.All(10)).WithRad(8).WithBorder(flux.Border{Width: 1, Color: colors.border}),
+		flux.ColumnElement(children...),
 	)
 }
 
-func currentSnapshotLyric(snapshot model.Snapshot) (model.CurrentLyricLine, bool) {
-	if snapshot.Lyrics.TrackID != "" && snapshot.Lyrics.TrackID != snapshot.Track.ID {
-		return model.CurrentLyricLine{}, false
-	}
-	if len(snapshot.Lyrics.Lines) == 0 {
-		return model.CurrentLyricLine{}, false
-	}
-	position := snapshot.Playback.Position
-	for _, line := range snapshot.Lyrics.Lines {
-		if position >= line.StartTimeMs && (line.EndTimeMs <= line.StartTimeMs || position < line.EndTimeMs) {
-			return line, true
-		}
-	}
-	for i := len(snapshot.Lyrics.Lines) - 1; i >= 0; i-- {
-		if position >= snapshot.Lyrics.Lines[i].StartTimeMs {
-			return snapshot.Lyrics.Lines[i], true
-		}
-	}
-	return snapshot.Lyrics.Lines[0], true
+func lyricLineActive(line model.CurrentLyricLine, position int64) bool {
+	return position >= line.StartTimeMs && (line.EndTimeMs <= line.StartTimeMs || position < line.EndTimeMs)
 }
 
 func useStableWaveform(ctx *flux.Context, values []float64, count int) []float64 {
 	if count <= 0 {
 		return nil
 	}
-	target := resampleWaveform(values, count)
-	ref := flux.UseRef(ctx, make([]float64, count))
-	previous := ref.Current
-	if len(previous) != count {
-		previous = make([]float64, count)
+	ref := flux.UseRef(ctx, stableWaveformState{
+		current: make([]float64, count),
+		target:  make([]float64, count),
+	})
+	state := ref.Current
+	if len(state.current) != count {
+		state.current = make([]float64, count)
 	}
-	next := make([]float64, count)
+	if len(state.target) != count {
+		state.target = make([]float64, count)
+	}
+	resampleWaveformInto(values, state.target)
 	for i := 0; i < count; i++ {
 		alpha := 0.24
-		if target[i] > previous[i] {
+		if state.target[i] > state.current[i] {
 			alpha = 0.42
 		}
-		next[i] = previous[i] + (target[i]-previous[i])*alpha
-		if next[i] < 0.01 {
-			next[i] = 0
+		state.current[i] = state.current[i] + (state.target[i]-state.current[i])*alpha
+		if state.current[i] < 0.01 {
+			state.current[i] = 0
 		}
 	}
-	ref.Current = next
-	return next
+	ref.Current = state
+	return state.current
 }
 
-func resampleWaveform(values []float64, count int) []float64 {
-	result := make([]float64, count)
-	if len(values) == 0 || count <= 0 {
-		return result
+type stableWaveformState struct {
+	current []float64
+	target  []float64
+}
+
+func resampleWaveformInto(values []float64, result []float64) {
+	count := len(result)
+	if count == 0 {
+		return
+	}
+	if len(values) == 0 {
+		for i := range result {
+			result[i] = 0
+		}
+		return
 	}
 	for i := 0; i < count; i++ {
 		start := int(float64(i) * float64(len(values)) / float64(count))
@@ -319,7 +452,6 @@ func resampleWaveform(values []float64, count int) []float64 {
 		value := sum / float64(end-start)
 		result[i] = clamp01(value * 1.18)
 	}
-	return result
 }
 
 func waveformBars(colors palette, values []float64, emptyText string) flux.Element {
@@ -473,6 +605,13 @@ func coverCachePath(track model.Track) string {
 	if len(track.CoverData) == 0 {
 		return ""
 	}
+	cacheKey := strings.TrimSpace(track.CoverHash)
+	if cacheKey == "" {
+		cacheKey = coverCacheKey(track)
+	}
+	if path := cachedCoverPath(cacheKey); path != "" {
+		return path
+	}
 	base, err := os.UserCacheDir()
 	if err != nil || strings.TrimSpace(base) == "" {
 		base = os.TempDir()
@@ -485,12 +624,36 @@ func coverCachePath(track model.Track) string {
 	name := hex.EncodeToString(sum[:]) + coverExtension(track.CoverMimeType, track.CoverData)
 	path := filepath.Join(dir, name)
 	if _, err := os.Stat(path); err == nil {
+		storeCoverPath(cacheKey, path)
 		return path
 	}
 	if err := os.WriteFile(path, track.CoverData, 0o644); err != nil {
 		return ""
 	}
+	storeCoverPath(cacheKey, path)
 	return path
+}
+
+var dashboardCoverCache = struct {
+	sync.RWMutex
+	paths map[string]string
+}{paths: map[string]string{}}
+
+func coverCacheKey(track model.Track) string {
+	sum := sha256.Sum256(track.CoverData)
+	return hex.EncodeToString(sum[:]) + "|" + track.CoverMimeType + "|" + fmt.Sprint(len(track.CoverData))
+}
+
+func cachedCoverPath(key string) string {
+	dashboardCoverCache.RLock()
+	defer dashboardCoverCache.RUnlock()
+	return dashboardCoverCache.paths[key]
+}
+
+func storeCoverPath(key string, path string) {
+	dashboardCoverCache.Lock()
+	dashboardCoverCache.paths[key] = path
+	dashboardCoverCache.Unlock()
 }
 
 func coverExtension(mime string, data []byte) string {
