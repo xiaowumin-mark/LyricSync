@@ -159,6 +159,26 @@ func TestTimelineClockReanchorsOnSeek(t *testing.T) {
 	}
 }
 
+func TestTimelineClockDoesNotSlowDownForDelayedSecondTicks(t *testing.T) {
+	clock := newTimelineClock()
+	base := time.Unix(100, 0)
+	session := smtcsuite.SessionInfo{
+		SessionID:      "music",
+		PlaybackStatus: smtcsuite.PlaybackStatusPlaying,
+		TimelineInfo: smtcsuite.TimelineInfo{
+			Position: 45 * time.Second,
+			EndTime:  3 * time.Minute,
+		},
+	}
+	_ = clock.Playback(session, base)
+
+	session.TimelineInfo.Position = 46 * time.Second
+	playback := clock.Playback(session, base.Add(1300*time.Millisecond))
+	if playback.Position < 46290 || playback.Position > 46310 {
+		t.Fatalf("expected virtual clock to keep sub-second progress, got %d", playback.Position)
+	}
+}
+
 func TestTrackFromSessionCopiesThumbnail(t *testing.T) {
 	thumbnail := []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}
 	track := trackFromSession(smtcsuite.SessionInfo{

@@ -217,8 +217,44 @@ func lyricPriorityIconButton(colors palette, tooltip string, icon string, disabl
 
 func aiSettingsPanel(colors palette, snapshot model.Snapshot, notice stringState, store *storepkg.Store, runtime *app.Runtime) flux.Element {
 	cfg := snapshot.Config
+	modelControl := flux.VSpacerElement(0)
+	if len(cfg.AI.Models) > 0 {
+		modelControl = flux.ColumnElement(
+			flux.VSpacerElement(10),
+			settingSelect(colors, "AI 模型", cfg.AI.Model, aiModelOptions(cfg.AI.Models, cfg.AI.Model), func(ctx *flux.Context, value string) {
+				next := cfg
+				next.AI.Model = strings.TrimSpace(value)
+				saveSettingsConfig(notice, store, runtime, next, "AI 模型已保存")
+			}),
+		)
+	}
 	return panel(colors,
 		sectionTitle(colors, "AI"),
+		modelControl,
+		flux.VSpacerElement(8),
+		secondaryButton(colors, "获取模型", func(ctx *flux.Context) {
+			notice.Set("正在获取 AI 模型")
+			go func() {
+				models, err := runtime.FetchAIModels(context.Background())
+				if err != nil {
+					message := "AI 模型获取失败: " + err.Error()
+					notice.Set(message)
+					store.AddLog(message)
+					return
+				}
+				notice.Set("AI 模型已更新: " + strconv.Itoa(len(models)))
+			}()
+		}),
+		flux.VSpacerElement(10),
+		settingSelect(colors, "AI 超时时间", strconv.Itoa(aiTimeoutSeconds(cfg.AI.TimeoutSeconds)), aiTimeoutOptions(), func(ctx *flux.Context, value string) {
+			seconds, err := strconv.Atoi(value)
+			if err != nil {
+				return
+			}
+			next := cfg
+			next.AI.TimeoutSeconds = seconds
+			saveSettingsConfig(notice, store, runtime, next, "AI 超时时间已保存")
+		}),
 		flux.VSpacerElement(12),
 		settingTextField(colors, "服务商地址", cfg.AI.BaseURL, "https://api.openai.com/v1", false, func(ctx *flux.Context, value string) {
 			next := cfg
@@ -232,20 +268,10 @@ func aiSettingsPanel(colors palette, snapshot model.Snapshot, notice stringState
 			saveSettingsConfig(notice, store, runtime, next, "AI API Key 已保存")
 		}),
 		flux.VSpacerElement(10),
-		settingTextField(colors, "模型", cfg.AI.Model, "gpt-4.1-mini", false, func(ctx *flux.Context, value string) {
-			next := cfg
-			next.AI.Model = strings.TrimSpace(value)
-			saveSettingsConfig(notice, store, runtime, next, "AI 模型已保存")
-		}),
-		flux.VSpacerElement(10),
 		settingSwitch(colors, "深度思考", "启用后由支持该能力的 AI 模型使用更强推理模式。", cfg.AI.DeepThinking, func(ctx *flux.Context, checked bool) {
 			next := cfg
 			next.AI.DeepThinking = checked
 			saveSettingsConfig(notice, store, runtime, next, "AI 深度思考设置已保存")
-		}),
-		flux.VSpacerElement(12),
-		secondaryButton(colors, "获取模型", func(ctx *flux.Context) {
-			notice.Set("获取模型将在 AI 阶段接入")
 		}),
 	)
 }
@@ -435,6 +461,50 @@ func ttmlIntervalOptions() []flux.SelectOptionItem[string] {
 		{Label: "每天", Value: "24"},
 		{Label: "每 2 天", Value: "48"},
 	}
+}
+
+func aiModelOptions(models []string, current string) []flux.SelectOptionItem[string] {
+	seen := map[string]struct{}{}
+	out := make([]flux.SelectOptionItem[string], 0, len(models)+1)
+	add := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		if _, ok := seen[value]; ok {
+			return
+		}
+		seen[value] = struct{}{}
+		out = append(out, flux.SelectOptionItem[string]{Label: value, Value: value})
+	}
+	add(current)
+	for _, modelName := range models {
+		add(modelName)
+	}
+	return out
+}
+
+func aiTimeoutOptions() []flux.SelectOptionItem[string] {
+	return []flux.SelectOptionItem[string]{
+		{Label: "60 秒", Value: "60"},
+		{Label: "120 秒", Value: "120"},
+		{Label: "180 秒", Value: "180"},
+		{Label: "300 秒", Value: "300"},
+		{Label: "600 秒", Value: "600"},
+	}
+}
+
+func aiTimeoutSeconds(seconds int) int {
+	if seconds <= 0 {
+		return 120
+	}
+	if seconds < 30 {
+		return 30
+	}
+	if seconds > 600 {
+		return 600
+	}
+	return seconds
 }
 
 func completeLyricPriority(values []string) []string {

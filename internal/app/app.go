@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	aipkg "github.com/xiaowumin-mark/LyricSync/internal/ai"
 	"github.com/xiaowumin-mark/LyricSync/internal/amll"
 	"github.com/xiaowumin-mark/LyricSync/internal/config"
 	"github.com/xiaowumin-mark/LyricSync/internal/lyric"
@@ -30,6 +31,7 @@ type Runtime struct {
 	lyricCancel context.CancelFunc
 	lyricRev    uint64
 	lyricKey    string
+	aiCancel    context.CancelFunc
 	aiLimiter   chan struct{}
 }
 
@@ -72,8 +74,12 @@ func (r *Runtime) Stop() {
 	if r.cancel != nil {
 		r.cancel()
 	}
-	r.cancelLyricSearch()
 	r.connector.Disconnect()
+	if r.media != nil {
+		r.media.Stop()
+	}
+	r.cancelLyricSearch()
+	r.cancelAIProcessing()
 }
 
 func (r *Runtime) ConnectAMLL(url string) error {
@@ -280,6 +286,24 @@ func (r *Runtime) UpdateTTMLDBIndex(ctx context.Context) error {
 	return nil
 }
 
+func (r *Runtime) FetchAIModels(ctx context.Context) ([]string, error) {
+	cfg := r.store.Config()
+	models, err := aipkg.ListModels(ctx, cfg.AI)
+	if err != nil {
+		return nil, err
+	}
+	next := r.store.Config()
+	next.AI.Models = models
+	if strings.TrimSpace(next.AI.Model) == "" && len(models) > 0 {
+		next.AI.Model = models[0]
+	}
+	if err := r.SaveConfig(next); err != nil {
+		return nil, err
+	}
+	r.store.AddLog("AI models updated: " + intText(len(models)))
+	return models, nil
+}
+
 func (r *Runtime) startSongRecorder(ctx context.Context) {
 	if r.songs == nil {
 		r.store.AddLog("Song database unavailable")
@@ -344,6 +368,7 @@ func (r *Runtime) recordTrackIfChanged(ctx context.Context, track model.Track, l
 	r.store.Notify("songs_changed", recorded.ID)
 	if r.publishBestLyricForRevision(ctx, revision, key, recorded, track) {
 		r.cancelLyricSearch()
+		r.startAIEnhancement(ctx, revision, key, recorded, track)
 	} else {
 		r.startLyricSearch(ctx, revision, key, recorded, track)
 	}
@@ -513,6 +538,102 @@ func (r *Runtime) startLyricSearch(parent context.Context, revision uint64, key 
 		current, err := r.songs.Get(ctx, item.ID)
 		if err == nil && r.isCurrentSong(current) {
 			r.publishBestLyricForRevision(ctx, revision, key, current, track)
+			r.startAIEnhancement(ctx, revision, key, current, track)
+		}
+	}()
+}
+
+func (r *Runtime) startAIEnhancement(parent context.Context, revision uint64, key string, item song.Song, track model.Track) {
+	if r.songs == nil || item.ID <= 0 || !r.lyricRevisionActive(revision, key, track) {
+		return
+	}
+	cfg := r.store.Config()
+	if !aiConfigured(cfg) {
+		return
+	}
+	lyrics, err := r.songs.Lyrics(parent, item.ID)
+	if err != nil {
+		r.store.AddLog("AI lyric load failed: " + err.Error())
+		return
+	}
+	selected, ok := selectBestLyric(lyrics, lyricPriorityForSong(item, cfg.Lyrics.SearchPriority))
+	if !ok || selected.AICleaned {
+		return
+	}
+	if !aiEnhancementAllowedSource(selected.Source) {
+		return
+	}
+	content := strings.TrimSpace(selected.TTMLLyric)
+	if content == "" {
+		content = strings.TrimSpace(selected.RawLyric)
+	}
+	document, err := lyric.Parse(content)
+	if err != nil || !lyric.IsUsable(document) {
+		return
+	}
+	ctx, cancel := context.WithCancel(parent)
+	r.lyricMu.Lock()
+	if r.lyricRev == revision && r.lyricKey == key {
+		if r.aiCancel != nil {
+			r.aiCancel()
+		}
+		r.aiCancel = cancel
+	}
+	r.lyricMu.Unlock()
+	go func() {
+		defer func() {
+			r.lyricMu.Lock()
+			if r.lyricRev == revision && r.lyricKey == key {
+				r.aiCancel = nil
+			}
+			r.lyricMu.Unlock()
+			cancel()
+		}()
+		if !r.lyricRevisionActive(revision, key, track) {
+			return
+		}
+		client, err := aipkg.NewClient(cfg.AI)
+		if err != nil {
+			if !errors.Is(err, aipkg.ErrDisabled) {
+				r.store.AddLog("AI client unavailable: " + err.Error())
+			}
+			return
+		}
+		r.store.AddLog("AI processing lyrics: " + item.Title)
+		var enhanced lyric.Document
+		var changed bool
+		err = r.runAIExclusive(ctx, func(taskCtx context.Context) error {
+			var enhanceErr error
+			enhanced, changed, enhanceErr = client.EnhanceLyrics(taskCtx, document, cfg.Lyrics)
+			return enhanceErr
+		})
+		if err != nil {
+			if ctx.Err() == nil {
+				r.store.AddLog("AI lyric processing failed: " + err.Error())
+			}
+			return
+		}
+		if !changed || !lyric.IsUsable(enhanced) || !r.lyricRevisionActive(revision, key, track) {
+			return
+		}
+		ttmlText := lyric.GenerateTTML(enhanced, false)
+		if err := r.songs.SetLyricWithFlags(ctx, item.ID, selected.Source, selected.SourceTrackID, selected.RawLyric, ttmlText, true); err != nil {
+			if ctx.Err() == nil {
+				r.store.AddLog("AI lyric save failed: " + err.Error())
+			}
+			return
+		}
+		if err := r.songs.ApplyLyricSource(ctx, item.ID, selected.Source); err != nil && !errors.Is(err, song.ErrNotFound) {
+			r.store.AddLog("AI lyric apply failed: " + err.Error())
+		}
+		if !r.lyricRevisionActive(revision, key, track) {
+			return
+		}
+		r.store.AddLog("AI lyrics applied [" + selected.Source + "]: " + item.Title)
+		r.store.Notify("songs_changed", item.ID)
+		current, err := r.songs.Get(ctx, item.ID)
+		if err == nil && r.isCurrentSong(current) {
+			r.publishBestLyricForRevision(ctx, revision, key, current, track)
 		}
 	}()
 }
@@ -527,16 +648,31 @@ func (r *Runtime) cancelLyricSearch() {
 	}
 }
 
+func (r *Runtime) cancelAIProcessing() {
+	r.lyricMu.Lock()
+	cancel := r.aiCancel
+	r.aiCancel = nil
+	r.lyricMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
 func (r *Runtime) advanceLyricRevision(key string) uint64 {
 	r.lyricMu.Lock()
 	cancel := r.lyricCancel
+	aiCancel := r.aiCancel
 	r.lyricCancel = nil
+	r.aiCancel = nil
 	r.lyricRev++
 	r.lyricKey = key
 	revision := r.lyricRev
 	r.lyricMu.Unlock()
 	if cancel != nil {
 		cancel()
+	}
+	if aiCancel != nil {
+		aiCancel()
 	}
 	return revision
 }
@@ -649,6 +785,22 @@ func lyricPriorityForSong(item song.Song, configured []string) []string {
 		add(source)
 	}
 	return priority
+}
+
+func aiConfigured(cfg model.Config) bool {
+	if strings.TrimSpace(cfg.AI.BaseURL) == "" || strings.TrimSpace(cfg.AI.APIKey) == "" || strings.TrimSpace(cfg.AI.Model) == "" {
+		return false
+	}
+	return cfg.Lyrics.CleanStrategy == model.LyricsCleanAI || cfg.Lyrics.AITranslate || cfg.Lyrics.AITransliterate
+}
+
+func aiEnhancementAllowedSource(source string) bool {
+	for _, platformSource := range song.PlatformLyricSources {
+		if source == platformSource {
+			return true
+		}
+	}
+	return false
 }
 
 func currentLyricLines(document lyric.Document) []model.CurrentLyricLine {

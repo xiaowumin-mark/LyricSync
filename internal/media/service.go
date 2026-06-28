@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	suiteaudio "github.com/xiaowumin-mark/smtc-suite-go/pkg/audio"
@@ -25,6 +26,10 @@ type Service struct {
 	store    *state.Store
 	spectrum *spectrumProcessor
 	timeline *timelineClock
+
+	mu     sync.Mutex
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
 }
 
 func New(store *state.Store) *Service {
@@ -32,6 +37,15 @@ func New(store *state.Store) *Service {
 }
 
 func (s *Service) Start(ctx context.Context) {
+	s.mu.Lock()
+	if s.cancel != nil {
+		s.mu.Unlock()
+		return
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	s.cancel = cancel
+	s.mu.Unlock()
+
 	if err := s.startSMTC(ctx); err != nil {
 		s.store.AddLog("SMTC unavailable: " + err.Error())
 		s.startSMTCSimulator(ctx)
@@ -40,6 +54,25 @@ func (s *Service) Start(ctx context.Context) {
 		s.store.AddLog("Audio capture unavailable: " + err.Error())
 		s.startAudioSimulator(ctx)
 	}
+}
+
+func (s *Service) Stop() {
+	s.mu.Lock()
+	cancel := s.cancel
+	s.cancel = nil
+	s.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	s.wg.Wait()
+}
+
+func (s *Service) run(fn func()) {
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		fn()
+	}()
 }
 
 func (s *Service) Control(command string, positionMs int64) error {
@@ -99,7 +132,7 @@ func (s *Service) startSMTC(ctx context.Context) error {
 	s.publishCurrent(m)
 	s.startTimelineTicker(ctx)
 
-	go func() {
+	s.run(func() {
 		defer func() {
 			_ = m.Close()
 			s.store.AddLog("Native SMTC monitor stopped")
@@ -130,7 +163,7 @@ func (s *Service) startSMTC(ctx context.Context) error {
 				s.publishCurrent(m)
 			}
 		}
-	}()
+	})
 	return nil
 }
 
@@ -169,7 +202,7 @@ func (s *Service) publishCurrent(m *monitor.Monitor) {
 }
 
 func (s *Service) startTimelineTicker(ctx context.Context) {
-	go func() {
+	s.run(func() {
 		ticker := time.NewTicker(timelineFrameInterval)
 		defer ticker.Stop()
 		for {
@@ -184,7 +217,7 @@ func (s *Service) startTimelineTicker(ctx context.Context) {
 				s.store.SetPlaybackProgress(position, model.FormatTime(now))
 			}
 		}
-	}()
+	})
 }
 
 func (s *Service) preferredCurrentID(m *monitor.Monitor) string {
@@ -461,7 +494,7 @@ func (s *Service) startAudio(ctx context.Context) error {
 	}
 	s.store.AddLog("Native WASAPI loopback started")
 
-	go func() {
+	s.run(func() {
 		defer func() {
 			_ = capturer.Close()
 			s.store.AddLog("Native WASAPI loopback stopped")
@@ -490,7 +523,7 @@ func (s *Service) startAudio(ctx context.Context) error {
 				s.store.SetAudio(s.audioFrame(seq, frame, samples))
 			}
 		}
-	}()
+	})
 	return nil
 }
 
@@ -584,7 +617,7 @@ func (s *Service) startSMTCSimulator(ctx context.Context) {
 		Active:    true,
 		UpdatedAt: model.Now(),
 	}})
-	go func() {
+	s.run(func() {
 		ticker := time.NewTicker(500 * time.Millisecond)
 		defer ticker.Stop()
 		start := time.Now()
@@ -616,11 +649,11 @@ func (s *Service) startSMTCSimulator(ctx context.Context) {
 				}})
 			}
 		}
-	}()
+	})
 }
 
 func (s *Service) startAudioSimulator(ctx context.Context) {
-	go func() {
+	s.run(func() {
 		ticker := time.NewTicker(50 * time.Millisecond)
 		defer ticker.Stop()
 		var seq uint64
@@ -648,7 +681,7 @@ func (s *Service) startAudioSimulator(ctx context.Context) {
 				})
 			}
 		}
-	}()
+	})
 }
 
 func simulatorSpectrum(t float64, bins int) []float64 {

@@ -168,11 +168,17 @@ func (c *timelineClock) updatePlayingAnchor(anchor *timelineAnchor, rawPosition 
 		return
 	}
 	if isQuantizedTimelineStep(anchor.rawPositionMs, rawPosition, rawDelta) {
-		if absInt64(delta) <= 150 {
+		quantum := maxInt64(rawDelta, 1000)
+		if expected >= rawPosition && expected <= rawPosition+quantum+150 {
+			return
+		}
+		if rawPosition > expected && rawPosition-expected <= quantum {
+			anchor.anchorPosition = rawPosition
+			anchor.anchorAt = now
 			return
 		}
 		anchor.anchorPosition = rawPosition
-		anchor.anchorAt = midpointTime(anchor.lastSeenAt, now)
+		anchor.anchorAt = now
 		return
 	}
 	anchor.anchorPosition = rawPosition
@@ -291,16 +297,16 @@ func isQuantizedTimelineStep(previous, current, delta int64) bool {
 	return previous%1000 == 0 && current%1000 == 0
 }
 
-func midpointTime(a, b time.Time) time.Time {
-	if a.IsZero() || b.Before(a) {
-		return b
-	}
-	return a.Add(b.Sub(a) / 2)
-}
-
 func absInt64(value int64) int64 {
 	if value < 0 {
 		return -value
 	}
 	return value
+}
+
+func maxInt64(a int64, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
 }

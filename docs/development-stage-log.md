@@ -34,7 +34,7 @@
 | 6 | 统一歌词结构与 TTML 能力 | 已完成 | 2026-06-27 | 本文档 |
 | 7 | 歌词来源接入与并行搜索 | 已完成 | 2026-06-27 | 本文档 |
 | 8 | 歌词任务调度与防堆积 | 已完成 | 2026-06-28 | 本文档 |
-| 9 | AI 处理能力 | 未开始 | - | - |
+| 9 | AI 处理能力 | 已完成 | 2026-06-28 | 本文档 |
 | 10 | AMLL 完整同步 | 未开始 | - | - |
 | 11 | 体验打磨、测试与发布准备 | 未开始 | - | - |
 
@@ -141,6 +141,56 @@ gopls check internal/app/app.go internal/app/app_test.go
 - 调度控制放在 `internal/app.Runtime`，歌词 provider 只负责遵守传入的 `context.Context`。
 - latest-only 策略通过“新 revision 取消旧任务 + debounce 后再次校验 revision”实现，不引入多任务队列。
 - AI 当前还没有实际请求链路，本阶段先提供单并发入口，后续 AI 清洗/翻译/音译接入时复用。
+
+## 阶段 9：AI 处理能力
+
+完成日期：2026-06-28
+
+状态：已完成。
+
+### 已完成内容
+
+- 新增 `internal/ai` OpenAI 协议兼容客户端，支持 `/models` 和 `/chat/completions`。
+- 设置页新增真实 `Fetch models` 操作，获取后持久化模型列表；有缓存模型时可下拉选择。
+- 歌词搜索链路接入 AI 增强：基础歌词先保存和发布，AI 清洗/翻译/音译作为后续增强任务执行。
+- AI 任务复用单并发限流，并新增独立 cancel；切歌、停止应用或 revision 变化会取消旧 AI 任务。
+- AI 结果写回数据库前校验 revision、歌曲 key 和 track ID，避免旧任务覆盖当前歌曲。
+- AI 失败、超时或输出不可用时只记录日志，继续使用非 AI 歌词版本。
+- AI 增强后的歌词写回原来源，并标记 `lyric_sources.ai_cleaned`，避免重复处理。
+
+### 交付物
+
+- `internal/ai/client.go`
+- `internal/ai/client_test.go`
+- `internal/app/app.go`
+- `internal/app/app_test.go`
+- `internal/model/model.go`
+- `internal/config/config.go`
+- `internal/song/repository.go`
+- `internal/ui/settings.go`
+
+### 验证方式
+
+执行：
+```powershell
+go test ./internal/ai -count=1
+go test ./internal/app -count=1
+go test ./internal/config ./internal/song ./internal/ui -count=1
+go test ./...
+```
+
+结果：通过。
+
+### 关键决策
+
+- 不引入 OpenAI SDK，直接使用 OpenAI 协议 HTTP 接口，方便兼容第三方 OpenAI 协议服务。
+- AI 不作为基础歌词发送的前置条件，避免播放时等待 AI。
+- 深度思考使用 `reasoning_effort`，若兼容服务返回 400 会自动降级重试。
+
+### 遗留问题
+
+- 设置页历史文本存在编码损坏，本阶段只接入功能，没有整体清理设置页文案。
+- AI 输出格式依赖模型遵守 JSON 指令，当前已做失败回退，后续可增加更强的 JSON 修复策略。
 
 ## 阶段 7 后续修正：歌曲去重与仪表盘性能
 

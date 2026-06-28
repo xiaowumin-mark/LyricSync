@@ -324,6 +324,10 @@ func (r *Repository) SetLyric(ctx context.Context, songID int64, source string, 
 }
 
 func (r *Repository) SetLyricWithMeta(ctx context.Context, songID int64, source string, sourceTrackID string, rawLyric string, ttmlLyric string) error {
+	return r.SetLyricWithFlags(ctx, songID, source, sourceTrackID, rawLyric, ttmlLyric, false)
+}
+
+func (r *Repository) SetLyricWithFlags(ctx context.Context, songID int64, source string, sourceTrackID string, rawLyric string, ttmlLyric string, aiCleaned bool) error {
 	if r == nil || r.db == nil {
 		return fmt.Errorf("song database is not available")
 	}
@@ -342,9 +346,9 @@ func (r *Repository) SetLyricWithMeta(ctx context.Context, songID int64, source 
 	_, err = r.db.ExecContext(ctx, `
 		INSERT INTO lyric_sources (
 			song_id, source, source_track_id, raw_lyric, ttml_lyric, available,
-			has_translation, has_transliteration, updated_at
+			ai_cleaned, has_translation, has_transliteration, updated_at
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(song_id, source) DO UPDATE SET
 			source_track_id = CASE
 				WHEN excluded.source_track_id != '' THEN excluded.source_track_id
@@ -353,10 +357,11 @@ func (r *Repository) SetLyricWithMeta(ctx context.Context, songID int64, source 
 			raw_lyric = excluded.raw_lyric,
 			ttml_lyric = excluded.ttml_lyric,
 			available = excluded.available,
+			ai_cleaned = max(lyric_sources.ai_cleaned, excluded.ai_cleaned),
 			has_translation = excluded.has_translation,
 			has_transliteration = excluded.has_transliteration,
 			updated_at = excluded.updated_at
-	`, songID, source, sourceTrackID, rawLyric, normalized.TTML, boolInt(normalized.Available),
+	`, songID, source, sourceTrackID, rawLyric, normalized.TTML, boolInt(normalized.Available), boolInt(aiCleaned),
 		boolInt(normalized.HasTranslation), boolInt(normalized.HasTransliteration), formatDBTime(now))
 	return err
 }

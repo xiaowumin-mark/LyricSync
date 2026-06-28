@@ -42,6 +42,9 @@ func TestMergeAppliesFullSettingsDefaults(t *testing.T) {
 	if got.AI.BaseURL == "" {
 		t.Fatal("expected default AI base URL")
 	}
+	if got.AI.TimeoutSeconds != 120 {
+		t.Fatalf("expected default AI timeout 120, got %d", got.AI.TimeoutSeconds)
+	}
 	if got.App.CloseBehavior != model.CloseBehaviorExit {
 		t.Fatalf("expected exit close behavior, got %q", got.App.CloseBehavior)
 	}
@@ -61,6 +64,27 @@ func TestMergePreservesDisabledTTMLDBAutoUpdate(t *testing.T) {
 	})
 	if got.TTMLDB.AutoUpdateIndex {
 		t.Fatal("expected TTML DB auto update=false to be preserved")
+	}
+}
+
+func TestMergeNormalizesAITimeout(t *testing.T) {
+	got := merge(Default(), model.Config{
+		AI: model.AIConfig{
+			BaseURL:        "https://example.test/v1",
+			TimeoutSeconds: 5,
+		},
+	})
+	if got.AI.TimeoutSeconds != 30 {
+		t.Fatalf("low timeout = %d, want 30", got.AI.TimeoutSeconds)
+	}
+	got = merge(Default(), model.Config{
+		AI: model.AIConfig{
+			BaseURL:        "https://example.test/v1",
+			TimeoutSeconds: 999,
+		},
+	})
+	if got.AI.TimeoutSeconds != 600 {
+		t.Fatalf("high timeout = %d, want 600", got.AI.TimeoutSeconds)
 	}
 }
 

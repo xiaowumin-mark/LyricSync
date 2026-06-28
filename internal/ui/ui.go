@@ -207,7 +207,7 @@ func navRail(colors palette, snapshot model.Snapshot, activePage string) flux.El
 		navItems(),
 		flux.NavigationRailWidth(92),
 		flux.NavigationRailHeader(flux.Text("LS", flux.TextSize(16))),
-		flux.NavigationRailFooter(flux.Text(strings.ToUpper(blankAs(snapshot.AMLL.Status, "off")), flux.TextSize(10))),
+		flux.NavigationRailFooter(flux.Text(amllStatusLabel(snapshot.AMLL.Status), flux.TextSize(10))),
 		flux.NavigationRailActiveColor(colors.primary),
 		flux.NavigationRailInactiveColor(colors.subtle),
 		flux.NavigationRailDecoration(flux.Bg(colors.muted).WithBorder(flux.Border{Width: 1, Color: colors.border})),
@@ -217,6 +217,19 @@ func navRail(colors palette, snapshot model.Snapshot, activePage string) flux.El
 			}
 		}),
 	)
+}
+
+func amllStatusLabel(status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "connected":
+		return "已连接"
+	case "connecting":
+		return "连接中"
+	case "disconnected", "off", "":
+		return "未连接"
+	default:
+		return strings.ToUpper(status)
+	}
 }
 
 func navItems() []flux.ElementNavItem {

@@ -35,6 +35,12 @@ github.com/xiaowumin-mark/amll-ttml v0.0.0-20260531031314-ba3d96f45513 h1:kHG0m2
 github.com/xiaowumin-mark/amll-ttml v0.0.0-20260531031314-ba3d96f45513/go.mod h1:1J3j/cQLE/RNQncshiDNaFx9LFwNNoQoW01RqM1Ye+0=
 github.com/xiaowumin-mark/smtc-suite-go v0.2.1-0.20260625121621-ebd4403094c3 h1:X2jVxJiwLP+Zqeal1kBRvAI/aVT1ScZVS7sAp7z2Mvc=
 github.com/xiaowumin-mark/smtc-suite-go v0.2.1-0.20260625121621-ebd4403094c3/go.mod h1:qxNDC+mI2MLJyuo1kKkkT/F1kTdmleA2jq82tRDYWT8=
+github.com/xiaowumin-mark/smtc-suite-go v0.2.1-0.20260628152838-6bfed1caa532 h1:4WBh3NBSIYaYOggXuXPuSMzSjCJFufJlIzJ83Nnllgo=
+github.com/xiaowumin-mark/smtc-suite-go v0.2.1-0.20260628152838-6bfed1caa532/go.mod h1:qxNDC+mI2MLJyuo1kKkkT/F1kTdmleA2jq82tRDYWT8=
+github.com/xiaowumin-mark/smtc-suite-go v0.2.1-0.20260628155527-9a95ca50f297 h1:lc+ziTH05jcVJkK1e24DzRFJkx0SQvAa0qe5+C5q/Ik=
+github.com/xiaowumin-mark/smtc-suite-go v0.2.1-0.20260628155527-9a95ca50f297/go.mod h1:RfIgU1rNJIUlsZBkreCEUIcnKxE1Tyrls30cM+4LKGE=
+github.com/xiaowumin-mark/smtc-suite-go v0.2.1-0.20260628163119-d4b614a094ec h1:ottsHb8Vn/ZhHRY9lhWB2y7M3Pua3WW5ag3cI/msU+Y=
+github.com/xiaowumin-mark/smtc-suite-go v0.2.1-0.20260628163119-d4b614a094ec/go.mod h1:RfIgU1rNJIUlsZBkreCEUIcnKxE1Tyrls30cM+4LKGE=
 golang.org/x/exp v0.0.0-20250408133849-7e4ce0ab07d0 h1:R84qjqJb5nVJMxqWYb3np9L5ZsaDtB+a39EqjV0JSUM=
 golang.org/x/exp v0.0.0-20250408133849-7e4ce0ab07d0/go.mod h1:S9Xr4PYopiDyqSyp5NjCrhFrqg6A5zA2E/iPHPhqnS8=
 golang.org/x/exp/shiny v0.0.0-20250408133849-7e4ce0ab07d0 h1:tMSqXTK+AQdW3LpCbfatHSRPHeW6+2WuxaVQuHftn80=

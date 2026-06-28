@@ -108,3 +108,46 @@ func TestRunAIExclusiveSerializesTasks(t *testing.T) {
 		t.Fatalf("max concurrent AI tasks = %d, want 1", max)
 	}
 }
+
+func TestAIConfiguredRequiresProviderAndFeature(t *testing.T) {
+	cfg := config.Default()
+	cfg.AI.BaseURL = "https://example.test/v1"
+	cfg.AI.APIKey = "key"
+	cfg.AI.Model = "model"
+	if aiConfigured(cfg) {
+		t.Fatal("expected AI to be disabled without lyric AI feature")
+	}
+	cfg.Lyrics.AITranslate = true
+	if !aiConfigured(cfg) {
+		t.Fatal("expected AI to be enabled with provider and feature")
+	}
+	cfg.AI.APIKey = ""
+	if aiConfigured(cfg) {
+		t.Fatal("expected AI to require API key")
+	}
+}
+
+func TestAIEnhancementAllowedSourceExcludesTTMLDBAndCustom(t *testing.T) {
+	blocked := []string{
+		model.LyricSourceTTMLDB,
+		model.LyricSourceCustom,
+		"",
+		"unknown",
+	}
+	for _, source := range blocked {
+		if aiEnhancementAllowedSource(source) {
+			t.Fatalf("expected source %q to be excluded from AI enhancement", source)
+		}
+	}
+
+	allowed := []string{
+		model.LyricSourceQQ,
+		model.LyricSourceKugou,
+		model.LyricSourceNetease,
+	}
+	for _, source := range allowed {
+		if !aiEnhancementAllowedSource(source) {
+			t.Fatalf("expected source %q to allow AI enhancement", source)
+		}
+	}
+}

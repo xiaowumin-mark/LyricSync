@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/xiaowumin-mark/LyricSync/internal/model"
 )
@@ -36,7 +37,8 @@ func Default() model.Config {
 			CleanStrategy: model.LyricsCleanSoftware,
 		},
 		AI: model.AIConfig{
-			BaseURL: "https://api.openai.com/v1",
+			BaseURL:        "https://api.openai.com/v1",
+			TimeoutSeconds: 120,
 		},
 		App: model.AppConfig{
 			CloseBehavior: model.CloseBehaviorExit,
@@ -154,6 +156,16 @@ func merge(defaults, cfg model.Config) model.Config {
 	if cfg.AI.BaseURL == "" {
 		cfg.AI.BaseURL = defaults.AI.BaseURL
 	}
+	if cfg.AI.TimeoutSeconds <= 0 {
+		cfg.AI.TimeoutSeconds = defaults.AI.TimeoutSeconds
+	}
+	if cfg.AI.TimeoutSeconds < 30 {
+		cfg.AI.TimeoutSeconds = 30
+	}
+	if cfg.AI.TimeoutSeconds > 600 {
+		cfg.AI.TimeoutSeconds = 600
+	}
+	cfg.AI.Models = normalizeModels(cfg.AI.Models)
 	if cfg.App.CloseBehavior == "" {
 		cfg.App.CloseBehavior = defaults.App.CloseBehavior
 	}
@@ -168,6 +180,23 @@ func merge(defaults, cfg model.Config) model.Config {
 		}
 	}
 	return cfg
+}
+
+func normalizeModels(values []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }
 
 func normalizePriority(values []string, defaults []string) []string {

@@ -238,14 +238,14 @@ func selectSession(
 	sessionID string,
 ) {
 	if err := runtime.SelectMediaSession(sessionID); err != nil {
-		notice.Set("SMTC selection failed: " + err.Error())
+		notice.Set("SMTC 会话选择失败: " + err.Error())
 		return
 	}
 	if sessionID == "" {
-		notice.Set("SMTC auto selection enabled")
+		notice.Set("已启用 SMTC 自动选择")
 		return
 	}
-	notice.Set("SMTC locked to selected session")
+	notice.Set("已锁定到选中的 SMTC 会话")
 }
 
 func sessionSelectValue(snapshot model.Snapshot) string {

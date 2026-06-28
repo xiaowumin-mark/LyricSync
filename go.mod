@@ -1,13 +1,13 @@
 module github.com/xiaowumin-mark/LyricSync
 
-go 1.25.1
+go 1.25.11
 
 require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/xiaowumin-mark/AMLX-MUSIC-API v0.0.0-20260510143522-2522b551028d
 	github.com/xiaowumin-mark/FluxUI v0.0.0-20260626151648-27e48f607c99
 	github.com/xiaowumin-mark/amll-ttml v0.0.0-20260531031314-ba3d96f45513
-	github.com/xiaowumin-mark/smtc-suite-go v0.2.1-0.20260625121621-ebd4403094c3
+	github.com/xiaowumin-mark/smtc-suite-go v0.2.1-0.20260628163119-d4b614a094ec
 	modernc.org/sqlite v1.53.0
 )
 
