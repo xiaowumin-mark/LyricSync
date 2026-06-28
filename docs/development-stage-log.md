@@ -33,7 +33,7 @@
 | 5 | 歌曲数据库与播放记录 | 已完成 | 2026-06-27 | 本文档 |
 | 6 | 统一歌词结构与 TTML 能力 | 已完成 | 2026-06-27 | 本文档 |
 | 7 | 歌词来源接入与并行搜索 | 已完成 | 2026-06-27 | 本文档 |
-| 8 | 歌词任务调度与防堆积 | 未开始 | - | - |
+| 8 | 歌词任务调度与防堆积 | 已完成 | 2026-06-28 | 本文档 |
 | 9 | AI 处理能力 | 未开始 | - | - |
 | 10 | AMLL 完整同步 | 未开始 | - | - |
 | 11 | 体验打磨、测试与发布准备 | 未开始 | - | - |
@@ -89,6 +89,58 @@ go test ./...
 ```text
 通过
 ```
+
+## 阶段 8：歌词任务调度与防堆积
+
+完成日期：2026-06-28
+
+状态：已完成。
+
+### 本阶段目标
+
+- 快速切歌时取消旧歌词任务。
+- 防止旧任务结果覆盖新歌曲。
+- 为后续 AI 清洗、翻译、音译任务预留单并发限流入口。
+
+### 已完成内容
+
+- Runtime 为 active track 引入歌词 revision。
+- active track 变化时递增 revision，并取消旧歌词搜索任务。
+- 歌词搜索任务统一使用 `context.Context` 派生取消。
+- 搜索启动前加入 debounce，快速连续切歌只保留最新任务。
+- 搜索保存歌词、更新配置、通知 UI、发布当前歌词前都会校验 revision。
+- revision 校验同时检查当前歌曲 key 和 track ID，避免同名同艺人但 track 已切换时旧结果写入。
+- 本地歌词命中也通过 revision 发布，和网络搜索使用同一套 stale result 防护。
+- 新增 `runAIExclusive`，后续 AI 请求统一通过单并发限流执行，避免 AI 任务堆积。
+
+### 交付物
+
+- 歌词任务调度与 revision 防护：
+  - `internal/app/app.go`
+- 回归测试：
+  - `internal/app/app_test.go`
+
+### 验证方式
+
+执行：
+
+```powershell
+go test ./internal/app -count=1
+go test ./...
+gopls check internal/app/app.go internal/app/app_test.go
+```
+
+结果：
+
+```text
+通过
+```
+
+### 关键决策
+
+- 调度控制放在 `internal/app.Runtime`，歌词 provider 只负责遵守传入的 `context.Context`。
+- latest-only 策略通过“新 revision 取消旧任务 + debounce 后再次校验 revision”实现，不引入多任务队列。
+- AI 当前还没有实际请求链路，本阶段先提供单并发入口，后续 AI 清洗/翻译/音译接入时复用。
 
 ## 阶段 7 后续修正：歌曲去重与仪表盘性能
 

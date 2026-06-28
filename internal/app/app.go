@@ -28,8 +28,12 @@ type Runtime struct {
 	cancel      context.CancelFunc
 	lyricMu     sync.Mutex
 	lyricCancel context.CancelFunc
-	lyricSeq    uint64
+	lyricRev    uint64
+	lyricKey    string
+	aiLimiter   chan struct{}
 }
+
+const lyricSearchDebounce = 250 * time.Millisecond
 
 func New(store *state.Store, songs *song.Repository) *Runtime {
 	mediaSvc := media.New(store)
@@ -45,6 +49,7 @@ func New(store *state.Store, songs *song.Repository) *Runtime {
 		connector: connector,
 		songs:     songs,
 		lyrics:    lyric.NewSearchService(ttmlCacheDir),
+		aiLimiter: make(chan struct{}, 1),
 	}
 }
 
@@ -308,11 +313,13 @@ func (r *Runtime) startSongRecorder(ctx context.Context) {
 
 func (r *Runtime) recordTrackIfChanged(ctx context.Context, track model.Track, lastKey string) string {
 	if isIdleTrack(track) {
+		r.advanceLyricRevision("")
 		r.store.SetLyrics(model.CurrentLyrics{TrackID: track.ID, UpdatedAt: model.Now()})
 		return ""
 	}
 	input := song.InputFromTrack(track)
 	if !input.Recordable() {
+		r.advanceLyricRevision("")
 		r.store.SetLyrics(model.CurrentLyrics{TrackID: track.ID, UpdatedAt: model.Now()})
 		return lastKey
 	}
@@ -320,6 +327,7 @@ func (r *Runtime) recordTrackIfChanged(ctx context.Context, track model.Track, l
 	if key == lastKey {
 		return lastKey
 	}
+	revision := r.advanceLyricRevision(key)
 	recorded, created, err := r.songs.RecordPlayback(ctx, input)
 	if errors.Is(err, song.ErrUnrecordable) {
 		return lastKey
@@ -334,10 +342,10 @@ func (r *Runtime) recordTrackIfChanged(ctx context.Context, track model.Track, l
 		r.store.AddLog("Song play count updated: " + recorded.Title)
 	}
 	r.store.Notify("songs_changed", recorded.ID)
-	if r.publishBestLyricForSong(ctx, recorded, track) {
+	if r.publishBestLyricForRevision(ctx, revision, key, recorded, track) {
 		r.cancelLyricSearch()
 	} else {
-		r.startLyricSearch(ctx, recorded, track)
+		r.startLyricSearch(ctx, revision, key, recorded, track)
 	}
 	return key
 }
@@ -382,15 +390,54 @@ func (r *Runtime) publishBestLyricForSong(ctx context.Context, item song.Song, t
 	return true
 }
 
-func (r *Runtime) startLyricSearch(parent context.Context, item song.Song, track model.Track) {
+func (r *Runtime) publishBestLyricForRevision(ctx context.Context, revision uint64, key string, item song.Song, track model.Track) bool {
+	if !r.lyricRevisionActive(revision, key, track) {
+		return false
+	}
+	if r.songs == nil || item.ID <= 0 {
+		r.setLyricsForRevision(revision, key, track, model.CurrentLyrics{TrackID: track.ID, UpdatedAt: model.Now()})
+		return false
+	}
+	lyrics, err := r.songs.Lyrics(ctx, item.ID)
+	if err != nil {
+		r.store.AddLog("Lyric load failed: " + err.Error())
+		r.setLyricsForRevision(revision, key, track, model.CurrentLyrics{TrackID: track.ID, UpdatedAt: model.Now()})
+		return false
+	}
+	selected, ok := selectBestLyric(lyrics, lyricPriorityForSong(item, r.store.Config().Lyrics.SearchPriority))
+	if !ok {
+		r.setLyricsForRevision(revision, key, track, model.CurrentLyrics{TrackID: track.ID, UpdatedAt: model.Now()})
+		return false
+	}
+	content := strings.TrimSpace(selected.TTMLLyric)
+	if content == "" {
+		content = strings.TrimSpace(selected.RawLyric)
+	}
+	document, err := lyric.Parse(content)
+	if err != nil || !lyric.IsUsable(document) {
+		r.setLyricsForRevision(revision, key, track, model.CurrentLyrics{TrackID: track.ID, UpdatedAt: model.Now()})
+		return false
+	}
+	ttmlText := selected.TTMLLyric
+	if strings.TrimSpace(ttmlText) == "" {
+		ttmlText = lyric.GenerateTTML(document, false)
+	}
+	return r.setLyricsForRevision(revision, key, track, model.CurrentLyrics{
+		TrackID:   track.ID,
+		Source:    selected.Source,
+		Lines:     currentLyricLines(document),
+		TTML:      ttmlText,
+		DelayMs:   selected.DelayMs,
+		UpdatedAt: model.Now(),
+	})
+}
+
+func (r *Runtime) startLyricSearch(parent context.Context, revision uint64, key string, item song.Song, track model.Track) {
 	if r.lyrics == nil || r.songs == nil || item.ID <= 0 {
 		return
 	}
-	r.cancelLyricSearch()
 	ctx, cancel := context.WithCancel(parent)
 	r.lyricMu.Lock()
-	r.lyricSeq++
-	seq := r.lyricSeq
 	r.lyricCancel = cancel
 	r.lyricMu.Unlock()
 
@@ -401,27 +448,44 @@ func (r *Runtime) startLyricSearch(parent context.Context, item song.Song, track
 		DurationMs: item.DurationMs,
 	}
 	cfg := r.store.Config()
-	r.store.AddLog("Searching lyrics: " + item.Title)
+	r.store.AddLog("Queued lyric search: " + item.Title)
 
 	go func() {
 		defer func() {
 			r.lyricMu.Lock()
-			if r.lyricSeq == seq {
+			if r.lyricRev == revision && r.lyricKey == key {
 				r.lyricCancel = nil
 			}
 			r.lyricMu.Unlock()
 		}()
+		timer := time.NewTimer(lyricSearchDebounce)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+		}
+		if !r.lyricRevisionActive(revision, key, track) {
+			return
+		}
+		r.store.AddLog("Searching lyrics: " + item.Title)
 		result := r.lyrics.SearchAll(ctx, query, cfg)
-		if ctx.Err() != nil {
+		if ctx.Err() != nil || !r.lyricRevisionActive(revision, key, track) {
 			return
 		}
 		saved := 0
 		for _, providerResult := range result.Results {
+			if ctx.Err() != nil || !r.lyricRevisionActive(revision, key, track) {
+				return
+			}
 			if err := r.songs.SetLyricWithMeta(ctx, item.ID, providerResult.Source, providerResult.SourceTrackID, providerResult.RawLyric, providerResult.TTMLLyric); err != nil {
 				r.store.AddLog("Lyric save failed [" + providerResult.Source + "]: " + err.Error())
 				continue
 			}
 			saved++
+		}
+		if !r.lyricRevisionActive(revision, key, track) {
+			return
 		}
 		if result.TTMLDBUpdatedAt.After(timeFromConfig(cfg.TTMLDB.LastUpdatedAt)) {
 			next := r.store.Config()
@@ -430,7 +494,9 @@ func (r *Runtime) startLyricSearch(parent context.Context, item song.Song, track
 		}
 		if saved == 0 {
 			r.store.AddLog("No usable lyrics found: " + item.Title)
-			r.store.Notify("songs_changed", item.ID)
+			if r.lyricRevisionActive(revision, key, track) {
+				r.store.Notify("songs_changed", item.ID)
+			}
 			return
 		}
 		selected, ok := lyric.SelectBestResult(result.Results, lyricPriorityForSong(item, cfg.Lyrics.SearchPriority))
@@ -440,10 +506,13 @@ func (r *Runtime) startLyricSearch(parent context.Context, item song.Song, track
 			}
 			r.store.AddLog("Lyric applied [" + selected.Source + "]: " + item.Title)
 		}
+		if !r.lyricRevisionActive(revision, key, track) {
+			return
+		}
 		r.store.Notify("songs_changed", item.ID)
 		current, err := r.songs.Get(ctx, item.ID)
 		if err == nil && r.isCurrentSong(current) {
-			r.publishBestLyricForSong(ctx, current, track)
+			r.publishBestLyricForRevision(ctx, revision, key, current, track)
 		}
 	}()
 }
@@ -456,6 +525,67 @@ func (r *Runtime) cancelLyricSearch() {
 	if cancel != nil {
 		cancel()
 	}
+}
+
+func (r *Runtime) advanceLyricRevision(key string) uint64 {
+	r.lyricMu.Lock()
+	cancel := r.lyricCancel
+	r.lyricCancel = nil
+	r.lyricRev++
+	r.lyricKey = key
+	revision := r.lyricRev
+	r.lyricMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	return revision
+}
+
+func (r *Runtime) lyricRevisionActive(revision uint64, key string, track model.Track) bool {
+	r.lyricMu.Lock()
+	active := r.lyricRev == revision && r.lyricKey == key
+	r.lyricMu.Unlock()
+	if !active {
+		return false
+	}
+	if strings.TrimSpace(track.ID) == "" {
+		return false
+	}
+	snapshotTrack := r.store.Snapshot().Track
+	current := song.InputFromTrack(snapshotTrack)
+	if !current.Recordable() {
+		return false
+	}
+	if strings.TrimSpace(track.ID) != "" && snapshotTrack.ID != track.ID {
+		return false
+	}
+	return song.UniqueKey(current) == key
+}
+
+func (r *Runtime) setLyricsForRevision(revision uint64, key string, track model.Track, lyrics model.CurrentLyrics) bool {
+	if !r.lyricRevisionActive(revision, key, track) {
+		return false
+	}
+	r.store.SetLyrics(lyrics)
+	return true
+}
+
+func (r *Runtime) runAIExclusive(ctx context.Context, fn func(context.Context) error) error {
+	if fn == nil {
+		return nil
+	}
+	limiter := r.aiLimiter
+	if limiter == nil {
+		limiter = make(chan struct{}, 1)
+		r.aiLimiter = limiter
+	}
+	select {
+	case limiter <- struct{}{}:
+		defer func() { <-limiter }()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	return fn(ctx)
 }
 
 func (r *Runtime) isCurrentSong(item song.Song) bool {
