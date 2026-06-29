@@ -50,3 +50,15 @@ func TestMoveLyricPriorityMovesByDirection(t *testing.T) {
 		t.Fatalf("move last down = %#v, want unchanged %#v", got, priority)
 	}
 }
+
+func TestAIApplyWaitSecondsClamp(t *testing.T) {
+	if got := aiApplyWaitSeconds(-1); got != 0 {
+		t.Fatalf("negative wait = %d, want 0", got)
+	}
+	if got := aiApplyWaitSeconds(3); got != 3 {
+		t.Fatalf("wait = %d, want 3", got)
+	}
+	if got := aiApplyWaitSeconds(99); got != 15 {
+		t.Fatalf("large wait = %d, want 15", got)
+	}
+}

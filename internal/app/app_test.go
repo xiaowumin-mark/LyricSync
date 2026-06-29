@@ -127,6 +127,22 @@ func TestAIConfiguredRequiresProviderAndFeature(t *testing.T) {
 	}
 }
 
+func TestAIApplyWaitDurationClampsConfig(t *testing.T) {
+	cfg := config.Default()
+	cfg.AI.ApplyWaitSeconds = -1
+	if got := aiApplyWaitDuration(cfg); got != 0 {
+		t.Fatalf("negative wait = %s, want 0", got)
+	}
+	cfg.AI.ApplyWaitSeconds = 3
+	if got := aiApplyWaitDuration(cfg); got != 3*time.Second {
+		t.Fatalf("wait = %s, want 3s", got)
+	}
+	cfg.AI.ApplyWaitSeconds = 99
+	if got := aiApplyWaitDuration(cfg); got != 15*time.Second {
+		t.Fatalf("large wait = %s, want 15s", got)
+	}
+}
+
 func TestAIEnhancementAllowedSourceExcludesTTMLDBAndCustom(t *testing.T) {
 	blocked := []string{
 		model.LyricSourceTTMLDB,

@@ -37,8 +37,9 @@ func Default() model.Config {
 			CleanStrategy: model.LyricsCleanSoftware,
 		},
 		AI: model.AIConfig{
-			BaseURL:        "https://api.openai.com/v1",
-			TimeoutSeconds: 120,
+			BaseURL:          "https://api.openai.com/v1",
+			TimeoutSeconds:   120,
+			ApplyWaitSeconds: 3,
 		},
 		App: model.AppConfig{
 			CloseBehavior: model.CloseBehaviorExit,
@@ -122,6 +123,9 @@ func decode(data []byte, defaults model.Config) (model.Config, error) {
 	if !hasNestedField(data, "ttmlDb", "autoUpdateIndex") {
 		cfg.TTMLDB.AutoUpdateIndex = defaults.TTMLDB.AutoUpdateIndex
 	}
+	if !hasNestedField(data, "ai", "applyWaitSeconds") {
+		cfg.AI.ApplyWaitSeconds = defaults.AI.ApplyWaitSeconds
+	}
 	return cfg, nil
 }
 
@@ -142,6 +146,7 @@ func Save(cfg model.Config) error {
 }
 
 func merge(defaults, cfg model.Config) model.Config {
+	aiWasEmpty := cfg.AI.BaseURL == "" && cfg.AI.APIKey == "" && cfg.AI.Model == "" && len(cfg.AI.Models) == 0 && !cfg.AI.DeepThinking && cfg.AI.TimeoutSeconds == 0 && cfg.AI.ApplyWaitSeconds == 0
 	if cfg.AMLL.URL == "" {
 		cfg.AMLL.URL = defaults.AMLL.URL
 	}
@@ -164,6 +169,15 @@ func merge(defaults, cfg model.Config) model.Config {
 	}
 	if cfg.AI.TimeoutSeconds > 600 {
 		cfg.AI.TimeoutSeconds = 600
+	}
+	if cfg.AI.ApplyWaitSeconds < 0 {
+		cfg.AI.ApplyWaitSeconds = 0
+	}
+	if cfg.AI.ApplyWaitSeconds > 15 {
+		cfg.AI.ApplyWaitSeconds = 15
+	}
+	if aiWasEmpty && cfg.AI.ApplyWaitSeconds == 0 {
+		cfg.AI.ApplyWaitSeconds = defaults.AI.ApplyWaitSeconds
 	}
 	cfg.AI.Models = normalizeModels(cfg.AI.Models)
 	if cfg.App.CloseBehavior == "" {

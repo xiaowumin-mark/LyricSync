@@ -45,6 +45,9 @@ func TestMergeAppliesFullSettingsDefaults(t *testing.T) {
 	if got.AI.TimeoutSeconds != 120 {
 		t.Fatalf("expected default AI timeout 120, got %d", got.AI.TimeoutSeconds)
 	}
+	if got.AI.ApplyWaitSeconds != 3 {
+		t.Fatalf("expected default AI apply wait 3, got %d", got.AI.ApplyWaitSeconds)
+	}
 	if got.App.CloseBehavior != model.CloseBehaviorExit {
 		t.Fatalf("expected exit close behavior, got %q", got.App.CloseBehavior)
 	}
@@ -85,6 +88,51 @@ func TestMergeNormalizesAITimeout(t *testing.T) {
 	})
 	if got.AI.TimeoutSeconds != 600 {
 		t.Fatalf("high timeout = %d, want 600", got.AI.TimeoutSeconds)
+	}
+}
+
+func TestDecodeDefaultsAIApplyWaitWhenMissing(t *testing.T) {
+	data := []byte(`{"ai":{"baseUrl":"https://example.test/v1","timeoutSeconds":120}}`)
+	got, err := decode(data, Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.AI.ApplyWaitSeconds != 3 {
+		t.Fatalf("missing apply wait = %d, want 3", got.AI.ApplyWaitSeconds)
+	}
+}
+
+func TestDecodePreservesDisabledAIApplyWait(t *testing.T) {
+	data := []byte(`{"ai":{"baseUrl":"https://example.test/v1","timeoutSeconds":120,"applyWaitSeconds":0}}`)
+	got, err := decode(data, Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.AI.ApplyWaitSeconds != 0 {
+		t.Fatalf("explicit disabled apply wait = %d, want 0", got.AI.ApplyWaitSeconds)
+	}
+}
+
+func TestMergeNormalizesAIApplyWait(t *testing.T) {
+	got := merge(Default(), model.Config{
+		AI: model.AIConfig{
+			BaseURL:          "https://example.test/v1",
+			TimeoutSeconds:   120,
+			ApplyWaitSeconds: -1,
+		},
+	})
+	if got.AI.ApplyWaitSeconds != 0 {
+		t.Fatalf("negative apply wait = %d, want 0", got.AI.ApplyWaitSeconds)
+	}
+	got = merge(Default(), model.Config{
+		AI: model.AIConfig{
+			BaseURL:          "https://example.test/v1",
+			TimeoutSeconds:   120,
+			ApplyWaitSeconds: 99,
+		},
+	})
+	if got.AI.ApplyWaitSeconds != 15 {
+		t.Fatalf("high apply wait = %d, want 15", got.AI.ApplyWaitSeconds)
 	}
 }
 

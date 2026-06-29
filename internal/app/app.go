@@ -366,9 +366,8 @@ func (r *Runtime) recordTrackIfChanged(ctx context.Context, track model.Track, l
 		r.store.AddLog("Song play count updated: " + recorded.Title)
 	}
 	r.store.Notify("songs_changed", recorded.ID)
-	if r.publishBestLyricForRevision(ctx, revision, key, recorded, track) {
+	if r.publishBestLyricForRevisionWithAIWait(ctx, revision, key, recorded, track) {
 		r.cancelLyricSearch()
-		r.startAIEnhancement(ctx, revision, key, recorded, track)
 	} else {
 		r.startLyricSearch(ctx, revision, key, recorded, track)
 	}
@@ -537,31 +536,55 @@ func (r *Runtime) startLyricSearch(parent context.Context, revision uint64, key 
 		r.store.Notify("songs_changed", item.ID)
 		current, err := r.songs.Get(ctx, item.ID)
 		if err == nil && r.isCurrentSong(current) {
-			r.publishBestLyricForRevision(ctx, revision, key, current, track)
-			r.startAIEnhancement(ctx, revision, key, current, track)
+			r.publishBestLyricForRevisionWithAIWait(ctx, revision, key, current, track)
 		}
 	}()
 }
 
-func (r *Runtime) startAIEnhancement(parent context.Context, revision uint64, key string, item song.Song, track model.Track) {
+type aiEnhancementResult struct {
+	Applied bool
+}
+
+func (r *Runtime) publishBestLyricForRevisionWithAIWait(ctx context.Context, revision uint64, key string, item song.Song, track model.Track) bool {
+	resultCh := r.startAIEnhancement(ctx, revision, key, item, track)
+	wait := aiApplyWaitDuration(r.store.Config())
+	if resultCh == nil || wait <= 0 {
+		return r.publishBestLyricForRevision(ctx, revision, key, item, track)
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case result := <-resultCh:
+		if result.Applied {
+			return true
+		}
+		return r.publishBestLyricForRevision(ctx, revision, key, item, track)
+	case <-timer.C:
+		return r.publishBestLyricForRevision(ctx, revision, key, item, track)
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func (r *Runtime) startAIEnhancement(parent context.Context, revision uint64, key string, item song.Song, track model.Track) <-chan aiEnhancementResult {
 	if r.songs == nil || item.ID <= 0 || !r.lyricRevisionActive(revision, key, track) {
-		return
+		return nil
 	}
 	cfg := r.store.Config()
 	if !aiConfigured(cfg) {
-		return
+		return nil
 	}
 	lyrics, err := r.songs.Lyrics(parent, item.ID)
 	if err != nil {
 		r.store.AddLog("AI lyric load failed: " + err.Error())
-		return
+		return nil
 	}
 	selected, ok := selectBestLyric(lyrics, lyricPriorityForSong(item, cfg.Lyrics.SearchPriority))
 	if !ok || selected.AICleaned {
-		return
+		return nil
 	}
 	if !aiEnhancementAllowedSource(selected.Source) {
-		return
+		return nil
 	}
 	content := strings.TrimSpace(selected.TTMLLyric)
 	if content == "" {
@@ -569,7 +592,7 @@ func (r *Runtime) startAIEnhancement(parent context.Context, revision uint64, ke
 	}
 	document, err := lyric.Parse(content)
 	if err != nil || !lyric.IsUsable(document) {
-		return
+		return nil
 	}
 	ctx, cancel := context.WithCancel(parent)
 	r.lyricMu.Lock()
@@ -580,7 +603,9 @@ func (r *Runtime) startAIEnhancement(parent context.Context, revision uint64, ke
 		r.aiCancel = cancel
 	}
 	r.lyricMu.Unlock()
+	resultCh := make(chan aiEnhancementResult, 1)
 	go func() {
+		result := aiEnhancementResult{}
 		defer func() {
 			r.lyricMu.Lock()
 			if r.lyricRev == revision && r.lyricKey == key {
@@ -588,6 +613,7 @@ func (r *Runtime) startAIEnhancement(parent context.Context, revision uint64, ke
 			}
 			r.lyricMu.Unlock()
 			cancel()
+			resultCh <- result
 		}()
 		if !r.lyricRevisionActive(revision, key, track) {
 			return
@@ -633,9 +659,10 @@ func (r *Runtime) startAIEnhancement(parent context.Context, revision uint64, ke
 		r.store.Notify("songs_changed", item.ID)
 		current, err := r.songs.Get(ctx, item.ID)
 		if err == nil && r.isCurrentSong(current) {
-			r.publishBestLyricForRevision(ctx, revision, key, current, track)
+			result.Applied = r.publishBestLyricForRevision(ctx, revision, key, current, track)
 		}
 	}()
+	return resultCh
 }
 
 func (r *Runtime) cancelLyricSearch() {
@@ -792,6 +819,17 @@ func aiConfigured(cfg model.Config) bool {
 		return false
 	}
 	return cfg.Lyrics.CleanStrategy == model.LyricsCleanAI || cfg.Lyrics.AITranslate || cfg.Lyrics.AITransliterate
+}
+
+func aiApplyWaitDuration(cfg model.Config) time.Duration {
+	seconds := cfg.AI.ApplyWaitSeconds
+	if seconds < 0 {
+		seconds = 0
+	}
+	if seconds > 15 {
+		seconds = 15
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 func aiEnhancementAllowedSource(source string) bool {

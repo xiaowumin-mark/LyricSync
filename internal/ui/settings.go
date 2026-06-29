@@ -255,6 +255,16 @@ func aiSettingsPanel(colors palette, snapshot model.Snapshot, notice stringState
 			next.AI.TimeoutSeconds = seconds
 			saveSettingsConfig(notice, store, runtime, next, "AI 超时时间已保存")
 		}),
+		flux.VSpacerElement(10),
+		settingSelect(colors, "AI 等待时间", strconv.Itoa(aiApplyWaitSeconds(cfg.AI.ApplyWaitSeconds)), aiApplyWaitOptions(), func(ctx *flux.Context, value string) {
+			seconds, err := strconv.Atoi(value)
+			if err != nil {
+				return
+			}
+			next := cfg
+			next.AI.ApplyWaitSeconds = seconds
+			saveSettingsConfig(notice, store, runtime, next, "AI 等待时间已保存")
+		}),
 		flux.VSpacerElement(12),
 		settingTextField(colors, "服务商地址", cfg.AI.BaseURL, "https://api.openai.com/v1", false, func(ctx *flux.Context, value string) {
 			next := cfg
@@ -503,6 +513,28 @@ func aiTimeoutSeconds(seconds int) int {
 	}
 	if seconds > 600 {
 		return 600
+	}
+	return seconds
+}
+
+func aiApplyWaitOptions() []flux.SelectOptionItem[string] {
+	return []flux.SelectOptionItem[string]{
+		{Label: "立即", Value: "0"},
+		{Label: "1 秒", Value: "1"},
+		{Label: "2 秒", Value: "2"},
+		{Label: "3 秒", Value: "3"},
+		{Label: "5 秒", Value: "5"},
+		{Label: "10 秒", Value: "10"},
+		{Label: "15 秒", Value: "15"},
+	}
+}
+
+func aiApplyWaitSeconds(seconds int) int {
+	if seconds < 0 {
+		return 0
+	}
+	if seconds > 15 {
+		return 15
 	}
 	return seconds
 }

@@ -131,6 +131,54 @@ func TestConnectorSendsBinaryCoverWithoutAudio(t *testing.T) {
 	}
 }
 
+func TestConnectorDoesNotRequireRemotePong(t *testing.T) {
+	textMessages := make(chan string, 16)
+	closed := make(chan struct{})
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+		defer close(closed)
+		defer conn.Close()
+		for {
+			messageType, data, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			if messageType == websocket.TextMessage {
+				textMessages <- string(data)
+			}
+		}
+	}))
+	defer server.Close()
+
+	store := state.New(config.Default())
+	ctx, cancel := context.WithCancel(context.Background())
+	connector := NewConnector(store)
+	if err := connector.Connect(ctx, "ws"+strings.TrimPrefix(server.URL, "http"), false); err != nil {
+		t.Fatal(err)
+	}
+	defer connector.Disconnect()
+
+	if got := waitText(t, textMessages); !strings.Contains(got, `"type":"initialize"`) {
+		t.Fatalf("expected initialize, got %s", got)
+	}
+	select {
+	case <-closed:
+		t.Fatal("connection closed even though remote simply did not send pong")
+	case <-time.After(200 * time.Millisecond):
+	}
+	cancel()
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("connection did not close after context cancellation")
+	}
+}
+
 func waitText(t *testing.T, ch <-chan string) string {
 	t.Helper()
 	select {

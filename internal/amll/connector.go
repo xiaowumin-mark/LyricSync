@@ -18,7 +18,11 @@ import (
 type ControlFunc func(command string, positionMs int64) error
 type VolumeFunc func(level float64) error
 
-const progressFrameInterval = time.Second / 60
+const (
+	progressFrameInterval = time.Second / 60
+	amllPingInterval      = 30 * time.Second
+	amllWriteTimeout      = 5 * time.Second
+)
 
 type Connector struct {
 	store     *state.Store
@@ -165,7 +169,7 @@ func (c *Connector) run(ctx context.Context, rawURL string, sendAudio bool, outg
 		}
 		writeMu.Lock()
 		defer writeMu.Unlock()
-		_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		_ = conn.SetWriteDeadline(time.Now().Add(amllWriteTimeout))
 		if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
 			return err
 		}
@@ -175,7 +179,7 @@ func (c *Connector) run(ctx context.Context, rawURL string, sendAudio bool, outg
 	sendBinary := func(data []byte, messageType string) error {
 		writeMu.Lock()
 		defer writeMu.Unlock()
-		_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		_ = conn.SetWriteDeadline(time.Now().Add(amllWriteTimeout))
 		if err := conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
 			return err
 		}
@@ -195,7 +199,7 @@ func (c *Connector) run(ctx context.Context, rawURL string, sendAudio bool, outg
 	readDone := make(chan error, 1)
 	go c.readLoop(ctx, conn, readDone, sendJSON)
 
-	ping := time.NewTicker(5 * time.Second)
+	ping := time.NewTicker(amllPingInterval)
 	defer ping.Stop()
 	progress := time.NewTicker(progressFrameInterval)
 	defer progress.Stop()
@@ -314,8 +318,11 @@ func (c *Connector) sendEvent(event model.Event, sendJSON func(Message, string) 
 }
 
 func (c *Connector) readLoop(ctx context.Context, conn *websocket.Conn, done chan<- error, sendJSON func(Message, string) error) {
+	// Many AMLL-compatible local receivers do not implement application-level
+	// ping/pong. Do not use a read deadline as a heartbeat requirement; writes
+	// or an actual socket close will still surface connection failures.
+	_ = conn.SetReadDeadline(time.Time{})
 	for {
-		_ = conn.SetReadDeadline(time.Now().Add(90 * time.Second))
 		messageType, data, err := conn.ReadMessage()
 		if err != nil {
 			if ctx.Err() != nil {

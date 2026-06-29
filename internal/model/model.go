@@ -50,12 +50,13 @@ type LyricsConfig struct {
 }
 
 type AIConfig struct {
-	BaseURL        string   `json:"baseUrl"`
-	APIKey         string   `json:"apiKey,omitempty"`
-	Model          string   `json:"model"`
-	Models         []string `json:"models,omitempty"`
-	DeepThinking   bool     `json:"deepThinking"`
-	TimeoutSeconds int      `json:"timeoutSeconds"`
+	BaseURL          string   `json:"baseUrl"`
+	APIKey           string   `json:"apiKey,omitempty"`
+	Model            string   `json:"model"`
+	Models           []string `json:"models,omitempty"`
+	DeepThinking     bool     `json:"deepThinking"`
+	TimeoutSeconds   int      `json:"timeoutSeconds"`
+	ApplyWaitSeconds int      `json:"applyWaitSeconds"`
 }
 
 type AppConfig struct {

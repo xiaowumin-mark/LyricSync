@@ -355,11 +355,20 @@ func (r *Repository) SetLyricWithFlags(ctx context.Context, songID int64, source
 				ELSE lyric_sources.source_track_id
 			END,
 			raw_lyric = excluded.raw_lyric,
-			ttml_lyric = excluded.ttml_lyric,
+			ttml_lyric = CASE
+				WHEN lyric_sources.ai_cleaned != 0 AND excluded.ai_cleaned = 0 THEN lyric_sources.ttml_lyric
+				ELSE excluded.ttml_lyric
+			END,
 			available = excluded.available,
 			ai_cleaned = max(lyric_sources.ai_cleaned, excluded.ai_cleaned),
-			has_translation = excluded.has_translation,
-			has_transliteration = excluded.has_transliteration,
+			has_translation = CASE
+				WHEN lyric_sources.ai_cleaned != 0 AND excluded.ai_cleaned = 0 THEN lyric_sources.has_translation
+				ELSE excluded.has_translation
+			END,
+			has_transliteration = CASE
+				WHEN lyric_sources.ai_cleaned != 0 AND excluded.ai_cleaned = 0 THEN lyric_sources.has_transliteration
+				ELSE excluded.has_transliteration
+			END,
 			updated_at = excluded.updated_at
 	`, songID, source, sourceTrackID, rawLyric, normalized.TTML, boolInt(normalized.Available), boolInt(aiCleaned),
 		boolInt(normalized.HasTranslation), boolInt(normalized.HasTransliteration), formatDBTime(now))

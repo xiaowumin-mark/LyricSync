@@ -134,11 +134,29 @@ func (c *Client) EnhanceLyrics(ctx context.Context, doc lyric.Document, cfg mode
 		return doc, false, nil
 	}
 	system := lyricPatchSystemPrompt()
-	user := fmt.Sprintf(
+	/*user := fmt.Sprintf(
 		"%s\n任务开关：clean=%t, translate_to_simplified_chinese=%t, romanize=%t。\n歌词 JSON：\n%s",
 		system, clean, translate, romanize, input,
-	)
-	text, err := c.chat(ctx, []Message{{Role: "system", Content: system}, {Role: "user", Content: user}})
+	)*/
+
+	var user strings.Builder
+	user.WriteString(system)
+	user.WriteString("\n任务开关：")
+
+	if clean {
+		user.WriteString("进行歌词清洗\n")
+	}
+	if translate {
+		user.WriteString("进行翻译歌词\n")
+	}
+	if romanize {
+		user.WriteString("进行中文式罗马音译\n")
+	}
+	user.WriteString("\n歌词 JSON：\n")
+	user.WriteString("```json\n")
+	user.WriteString(input)
+	user.WriteString("\n```\n")
+	text, err := c.chat(ctx, []Message{{Role: "system", Content: system}, {Role: "user", Content: user.String()}})
 	if err != nil {
 		return doc, false, err
 	}
@@ -413,6 +431,8 @@ func lyricPatchSystemPrompt() string {
 		"你是一个用于音乐播放器的歌词同步增强系统（Lyric Patch Engine）。",
 		"",
 		"你的任务是：对用户提供的编号歌词数据进行清洗、翻译和拼音标注，并输出 patch 操作。",
+		"需要做到速度快，不要重复解释，不要输出任何多余内容。",
+		"不要做任何多余且重复的工作，原本歌词有翻译的行就不要再次覆盖了，避免损失时间。",
 		"",
 		"【核心规则】",
 		"1. 你只能处理用户提供的歌词编号数据。",
@@ -449,7 +469,9 @@ func lyricPatchSystemPrompt() string {
 		"- 如果歌词是其他语言，则翻译为中文",
 		"- 不允许使用拼音或音译作为翻译",
 		"- 如果歌词是繁体中文，则翻译为简体中文",
-		"- 如果你觉得原翻译不准确或不自然，可以修改翻译",
+		"- 如果有的歌词行没有翻译就补上",
+		"- 如果有些歌词行有翻译，有些没有，则只补上没有翻译的行",
+		"- 如果歌词已经有翻译的行，就不要再次覆盖了，避免损失时间",
 		"",
 		"【拼音规则】",
 		"roman 字段：",
@@ -457,7 +479,6 @@ func lyricPatchSystemPrompt() string {
 		"- 使用标准中文拼音风格音译（不带声调）",
 		"- 不允许对中文或英文进行拼音转换",
 		"- 如果已经有拼音，则不需要修改",
-		"- 如果你觉得原拼音不准确或不自然，可以修改拼音",
 		"",
 		"【输入格式】",
 		"输入为 JSON：",
@@ -469,7 +490,7 @@ func lyricPatchSystemPrompt() string {
 		"支持三种操作：",
 		"删除行：- N",
 		"删除范围：- A-B",
-		"修改字段：+ N text | ...",
+		//"修改字段：+ N text | ...",
 		"修改字段：+ N trans | ...",
 		"修改字段：+ N roman | ...",
 		"",
@@ -483,13 +504,13 @@ func lyricPatchSystemPrompt() string {
 		"",
 		"【字段规则】",
 		"- 每条 patch 只能修改一个字段",
-		"- text / trans / roman 必须分开写",
+		//"- text / trans / roman 必须分开写",
+		"- trans / roman 只能同时修改一个字段",
 		"- 操作之间无顺序依赖",
 		"- 只输出发生变化的内容",
 		"- 如果没有任何修改，输出空内容",
 		"",
 		"【输出示例】",
-		"+ 1 text | hello world",
 		"+ 1 trans | 你好 世界",
 		"+ 1 roman | ni hao shi jie",
 		"- 5",
@@ -497,6 +518,9 @@ func lyricPatchSystemPrompt() string {
 		"注意：输出必须严格遵守以上规则，否则将无法被解析。",
 		"注意：中文歌词不需要翻译！！",
 		"如果你认为没有任何修改需要输出，请直接输出字符串'---'。",
+		"如果任务要求你翻译歌词，但是歌词是中文，则不需要翻译，直接输出'---'。（如果中文中包含了英文，或者有几行英文，则仅仅修改那几行就够了）",
+		"音译也是如此",
+		"硬性要求：中文歌词不能出现翻译",
 	}, "\n")
 }
 

@@ -335,6 +335,46 @@ func TestLyricsSlotsAndUpdate(t *testing.T) {
 	}
 }
 
+func TestSetLyricPreservesAICleanedTTMLFromRawRefresh(t *testing.T) {
+	repo := openTestRepo(t)
+	ctx := context.Background()
+
+	s, err := repo.Create(ctx, Input{Title: "Song", Artist: "Artist"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.SetLyric(ctx, s.ID, SourceQQ, "[00:01.00]raw line", ""); err != nil {
+		t.Fatal(err)
+	}
+	aiTTML := `<tt xmlns="http://www.w3.org/ns/ttml"><body><div><p begin="00:00:01.000" end="00:00:03.000">ai line</p></div></body></tt>`
+	if err := repo.SetLyricWithFlags(ctx, s.ID, SourceQQ, "track-1", "[00:01.00]raw line", aiTTML, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.SetLyric(ctx, s.ID, SourceQQ, "[00:01.00]raw refreshed", ""); err != nil {
+		t.Fatal(err)
+	}
+	lyrics, err := repo.Lyrics(ctx, s.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range lyrics {
+		if item.Source != SourceQQ {
+			continue
+		}
+		if !item.AICleaned {
+			t.Fatalf("expected AI flag to remain set, got %#v", item)
+		}
+		if !strings.Contains(item.RawLyric, "raw refreshed") {
+			t.Fatalf("expected raw lyric refresh, got %#v", item.RawLyric)
+		}
+		if !strings.Contains(item.TTMLLyric, "ai line") {
+			t.Fatalf("expected AI TTML to be preserved, got %s", item.TTMLLyric)
+		}
+		return
+	}
+	t.Fatal("QQ lyric source not found")
+}
+
 func TestSetLyricDelay(t *testing.T) {
 	repo := openTestRepo(t)
 	ctx := context.Background()
